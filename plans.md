@@ -67,7 +67,7 @@
 ```
 finta/
 ├── cmd/finta/main.go              # CLI 入口
-├── pkg/
+├── internal/
 │   ├── agent/                     # Agent 核心
 │   │   ├── agent.go               # Agent 接口和基础实现
 │   │   ├── context.go             # Agent 上下文管理
