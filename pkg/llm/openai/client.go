@@ -12,9 +12,24 @@ type Client struct {
 	model  string
 }
 
-func NewClient(apiKey, model string) *Client {
+// NewClient creates a new OpenAI client with the given API key and model.
+// If baseURL is empty, it uses the default OpenAI API endpoint.
+// If baseURL is provided, it uses the custom endpoint (useful for OpenAI-compatible APIs).
+func NewClient(apiKey, model string, baseURL ...string) *Client {
+	var client *openai.Client
+
+	if len(baseURL) > 0 && baseURL[0] != "" {
+		// Use custom base URL
+		config := openai.DefaultConfig(apiKey)
+		config.BaseURL = baseURL[0]
+		client = openai.NewClientWithConfig(config)
+	} else {
+		// Use default OpenAI endpoint
+		client = openai.NewClient(apiKey)
+	}
+
 	return &Client{
-		client: openai.NewClient(apiKey),
+		client: client,
 		model:  model,
 	}
 }

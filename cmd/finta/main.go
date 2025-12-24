@@ -14,6 +14,7 @@ import (
 )
 
 var (
+	apiBaseURL  string
 	apiKey      string
 	model       string
 	temperature float32
@@ -34,6 +35,7 @@ func main() {
 		RunE:  runChat,
 	}
 
+	chatCmd.Flags().StringVar(&apiBaseURL, "api-base-url", "https://api.openai.com/v1", "OpenAI API base URL")
 	chatCmd.Flags().StringVar(&apiKey, "api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key")
 	chatCmd.Flags().StringVar(&model, "model", "gpt-4-turbo", "Model to use")
 	chatCmd.Flags().Float32Var(&temperature, "temperature", 0.7, "Temperature")
@@ -55,7 +57,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	task := args[0]
 
 	// Create LLM client
-	llmClient := openai.NewClient(apiKey, model)
+	llmClient := openai.NewClient(apiKey, model, apiBaseURL)
 
 	// Create tool registry
 	registry := tool.NewRegistry()
