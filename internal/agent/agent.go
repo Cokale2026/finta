@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"finta/internal/llm"
+	"finta/internal/logger"
 	"finta/internal/tool"
 )
 
@@ -16,6 +17,7 @@ type Input struct {
 	Task        string
 	MaxTurns    int
 	Temperature float32
+	Logger      *logger.Logger
 }
 
 type Output struct {

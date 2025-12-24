@@ -7,6 +7,7 @@ import (
 
 	"finta/internal/agent"
 	"finta/internal/llm/openai"
+	"finta/internal/logger"
 	"finta/internal/tool"
 	"finta/internal/tool/builtin"
 
@@ -19,6 +20,8 @@ var (
 	model       string
 	temperature float32
 	maxTurns    int
+	verbose     bool
+	noColor     bool
 )
 
 func main() {
@@ -40,6 +43,8 @@ func main() {
 	chatCmd.Flags().StringVar(&model, "model", "gpt-4-turbo", "Model to use")
 	chatCmd.Flags().Float32Var(&temperature, "temperature", 0.7, "Temperature")
 	chatCmd.Flags().IntVar(&maxTurns, "max-turns", 10, "Maximum conversation turns")
+	chatCmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose output (debug mode)")
+	chatCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 
 	rootCmd.AddCommand(chatCmd)
 
@@ -56,18 +61,34 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	task := args[0]
 
+	// Create Logger
+	logLevel := logger.LevelInfo
+	if verbose {
+		logLevel = logger.LevelDebug
+	}
+	log := logger.NewLogger(os.Stdout, logLevel)
+	if noColor {
+		log.SetColorMode(false)
+	}
+
 	// Create LLM client
+	log.Debug("Creating LLM client (model: %s)", model)
 	llmClient := openai.NewClient(apiKey, model, apiBaseURL)
 
 	// Create tool registry
+	log.Debug("Registering built-in tools")
 	registry := tool.NewRegistry()
 	registry.Register(builtin.NewReadTool())
 	registry.Register(builtin.NewBashTool())
+
+	log.Info("Registered %d tools: read, bash", 2)
 
 	// Create Agent
 	systemPrompt := `You are a helpful AI assistant with access to tools.
 You can read files and execute bash commands.
 Always provide clear, concise responses.`
+
+	log.Debug("Agent created with max_turns=%d, temperature=%.2f", maxTurns, temperature)
 
 	ag := agent.NewBaseAgent("general", systemPrompt, llmClient, registry, &agent.Config{
 		Model:       model,
@@ -75,22 +96,18 @@ Always provide clear, concise responses.`
 		MaxTurns:    maxTurns,
 	})
 
-	// Run Agent
-	fmt.Printf("Running agent: %s\n", task)
-	fmt.Println("---")
-
-	output, err := ag.Run(context.Background(), &agent.Input{
+	// Run Agent (pass Logger to agent)
+	_, err := ag.Run(context.Background(), &agent.Input{
 		Task:        task,
 		Temperature: temperature,
+		Logger:      log,
 	})
 	if err != nil {
+		log.Error("Agent execution failed: %v", err)
 		return err
 	}
 
-	// Output result
-	fmt.Println(output.Result)
-	fmt.Println("---")
-	fmt.Printf("Tool calls made: %d\n", len(output.ToolCalls))
+	log.Debug("Agent completed successfully")
 
 	return nil
 }

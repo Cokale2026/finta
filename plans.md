@@ -912,7 +912,416 @@ func (a *BaseAgent) executeTools(ctx context.Context, toolCalls []*llm.ToolCall)
 }
 ```
 
-#### 1.7 基础 CLI
+#### 1.7 日志和输出展示系统
+
+这是 Phase 1 中非常重要的一部分，让用户能够清楚看到 Agent 做了什么。
+
+**文件**: `pkg/logger/logger.go`
+
+```go
+package logger
+
+import (
+    "fmt"
+    "io"
+    "os"
+    "strings"
+    "time"
+)
+
+type Level int
+
+const (
+    LevelDebug Level = iota
+    LevelInfo
+    LevelTool
+    LevelAgent
+    LevelError
+)
+
+type Logger struct {
+    writer    io.Writer
+    level     Level
+    showTime  bool
+    colorMode bool
+}
+
+func NewLogger(w io.Writer, level Level) *Logger {
+    if w == nil {
+        w = os.Stdout
+    }
+    return &Logger{
+        writer:    w,
+        level:     level,
+        showTime:  true,
+        colorMode: true,
+    }
+}
+
+// ANSI 颜色代码
+const (
+    ColorReset   = "\033[0m"
+    ColorRed     = "\033[31m"
+    ColorGreen   = "\033[32m"
+    ColorYellow  = "\033[33m"
+    ColorBlue    = "\033[34m"
+    ColorMagenta = "\033[35m"
+    ColorCyan    = "\033[36m"
+    ColorGray    = "\033[90m"
+    ColorBold    = "\033[1m"
+)
+
+func (l *Logger) Debug(format string, args ...any) {
+    if l.level <= LevelDebug {
+        l.log(ColorGray, "DEBUG", format, args...)
+    }
+}
+
+func (l *Logger) Info(format string, args ...any) {
+    if l.level <= LevelInfo {
+        l.log(ColorBlue, "INFO", format, args...)
+    }
+}
+
+func (l *Logger) Error(format string, args ...any) {
+    l.log(ColorRed, "ERROR", format, args...)
+}
+
+func (l *Logger) AgentThinking(content string) {
+    if l.level <= LevelAgent {
+        l.printSection(ColorMagenta, "🤔 Agent Thinking", content)
+    }
+}
+
+func (l *Logger) AgentResponse(content string) {
+    if l.level <= LevelAgent {
+        l.printSection(ColorGreen, "💬 Agent Response", content)
+    }
+}
+
+func (l *Logger) ToolCall(toolName string, params string) {
+    if l.level <= LevelTool {
+        l.printSection(ColorCyan, fmt.Sprintf("🔧 Tool Call: %s", toolName), params)
+    }
+}
+
+func (l *Logger) ToolResult(toolName string, success bool, output string, duration time.Duration) {
+    if l.level <= LevelTool {
+        status := "✅ Success"
+        color := ColorGreen
+        if !success {
+            status = "❌ Failed"
+            color = ColorRed
+        }
+
+        header := fmt.Sprintf("📊 Tool Result: %s [%s] (%s)", toolName, status, duration)
+        l.printSection(color, header, output)
+    }
+}
+
+func (l *Logger) SessionStart(task string) {
+    l.printBanner(ColorCyan, "🚀 Session Started", task)
+}
+
+func (l *Logger) SessionEnd(duration time.Duration, toolCallCount int) {
+    summary := fmt.Sprintf("Duration: %s | Tool Calls: %d", duration, toolCallCount)
+    l.printBanner(ColorGreen, "✨ Session Completed", summary)
+}
+
+func (l *Logger) log(color, level, format string, args ...any) {
+    timestamp := ""
+    if l.showTime {
+        timestamp = time.Now().Format("15:04:05") + " "
+    }
+
+    msg := fmt.Sprintf(format, args...)
+
+    if l.colorMode {
+        fmt.Fprintf(l.writer, "%s%s[%s]%s %s\n",
+            color, timestamp, level, ColorReset, msg)
+    } else {
+        fmt.Fprintf(l.writer, "%s[%s] %s\n", timestamp, level, msg)
+    }
+}
+
+func (l *Logger) printSection(color, header, content string) {
+    separator := strings.Repeat("─", 60)
+
+    if l.colorMode {
+        fmt.Fprintf(l.writer, "\n%s%s%s%s\n", ColorBold, color, header, ColorReset)
+        fmt.Fprintf(l.writer, "%s%s%s\n", color, separator, ColorReset)
+        fmt.Fprintf(l.writer, "%s\n", content)
+        fmt.Fprintf(l.writer, "%s%s%s\n\n", color, separator, ColorReset)
+    } else {
+        fmt.Fprintf(l.writer, "\n%s\n%s\n%s\n%s\n\n", header, separator, content, separator)
+    }
+}
+
+func (l *Logger) printBanner(color, title, subtitle string) {
+    separator := strings.Repeat("═", 70)
+
+    if l.colorMode {
+        fmt.Fprintf(l.writer, "\n%s%s%s%s\n", ColorBold, color, separator, ColorReset)
+        fmt.Fprintf(l.writer, "%s%s  %s%s\n", ColorBold, color, title, ColorReset)
+        if subtitle != "" {
+            fmt.Fprintf(l.writer, "%s  %s%s\n", color, subtitle, ColorReset)
+        }
+        fmt.Fprintf(l.writer, "%s%s%s%s\n\n", ColorBold, color, separator, ColorReset)
+    } else {
+        fmt.Fprintf(l.writer, "\n%s\n  %s\n  %s\n%s\n\n", separator, title, subtitle, separator)
+    }
+}
+
+func (l *Logger) Progress(current, total int, message string) {
+    if l.level <= LevelInfo {
+        bar := l.progressBar(current, total, 30)
+        fmt.Fprintf(l.writer, "\r%s[%d/%d] %s", bar, current, total, message)
+        if current == total {
+            fmt.Fprintln(l.writer)
+        }
+    }
+}
+
+func (l *Logger) progressBar(current, total, width int) string {
+    if total == 0 {
+        return ""
+    }
+
+    percent := float64(current) / float64(total)
+    filled := int(percent * float64(width))
+
+    bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+
+    if l.colorMode {
+        return fmt.Sprintf("%s%s%s %.0f%%", ColorCyan, bar, ColorReset, percent*100)
+    }
+    return fmt.Sprintf("%s %.0f%%", bar, percent*100)
+}
+```
+
+**文件**: `pkg/agent/context.go`
+
+添加执行上下文，用于记录和展示执行过程：
+
+```go
+package agent
+
+import (
+    "time"
+    "finta/internal/logger"
+)
+
+type ExecutionContext struct {
+    Logger        *logger.Logger
+    StartTime     time.Time
+    CurrentTurn   int
+    TotalTurns    int
+    ToolCallCount int
+}
+
+func NewExecutionContext(log *logger.Logger) *ExecutionContext {
+    return &ExecutionContext{
+        Logger:    log,
+        StartTime: time.Now(),
+    }
+}
+
+func (ctx *ExecutionContext) LogToolCall(toolName, params string) {
+    ctx.ToolCallCount++
+    ctx.Logger.ToolCall(toolName, params)
+}
+
+func (ctx *ExecutionContext) LogToolResult(toolName string, success bool, output string, duration time.Duration) {
+    ctx.Logger.ToolResult(toolName, success, output, duration)
+}
+
+func (ctx *ExecutionContext) LogThinking(content string) {
+    ctx.Logger.AgentThinking(content)
+}
+
+func (ctx *ExecutionContext) LogResponse(content string) {
+    ctx.Logger.AgentResponse(content)
+}
+
+func (ctx *ExecutionContext) LogProgress() {
+    ctx.Logger.Progress(ctx.CurrentTurn, ctx.TotalTurns,
+        fmt.Sprintf("Turn %d/%d", ctx.CurrentTurn, ctx.TotalTurns))
+}
+```
+
+**更新**: `pkg/agent/base.go`
+
+集成日志系统：
+
+```go
+func (a *BaseAgent) Run(ctx context.Context, input *Input) (*Output, error) {
+    // 创建执行上下文
+    execCtx := NewExecutionContext(input.Logger)
+
+    // 记录会话开始
+    execCtx.Logger.SessionStart(input.Task)
+
+    // ... 初始化消息列表 ...
+
+    maxTurns := input.MaxTurns
+    if maxTurns == 0 {
+        maxTurns = a.config.MaxTurns
+    }
+    execCtx.TotalTurns = maxTurns
+
+    allToolCalls := make([]*tool.CallResult, 0)
+
+    // Agent 运行循环
+    for turn := 0; turn < maxTurns; turn++ {
+        execCtx.CurrentTurn = turn + 1
+        execCtx.LogProgress()
+
+        execCtx.Logger.Info("Turn %d: Calling LLM...", turn+1)
+
+        // 调用 LLM
+        resp, err := a.llmClient.Chat(ctx, &llm.ChatRequest{
+            Messages:    messages,
+            Tools:       a.toolRegistry.GetToolDefinitions(),
+            Temperature: input.Temperature,
+            MaxTokens:   a.config.MaxTokens,
+        })
+        if err != nil {
+            execCtx.Logger.Error("LLM call failed: %v", err)
+            return nil, fmt.Errorf("LLM call failed: %w", err)
+        }
+
+        // 记录 Agent 响应
+        if resp.Message.Content != "" {
+            execCtx.LogResponse(resp.Message.Content)
+        }
+
+        // 添加助手消息
+        messages = append(messages, resp.Message)
+
+        // 检查是否完成
+        if resp.StopReason == llm.StopReasonStop {
+            execCtx.Logger.SessionEnd(
+                time.Since(execCtx.StartTime),
+                execCtx.ToolCallCount,
+            )
+            return &Output{
+                Messages:  messages,
+                Result:    resp.Message.Content,
+                ToolCalls: allToolCalls,
+            }, nil
+        }
+
+        // 处理工具调用
+        if resp.StopReason == llm.StopReasonToolCalls {
+            execCtx.Logger.Info("Executing %d tool call(s)...", len(resp.Message.ToolCalls))
+
+            toolResults, err := a.executeToolsWithLogging(ctx, resp.Message.ToolCalls, execCtx)
+            if err != nil {
+                execCtx.Logger.Error("Tool execution failed: %v", err)
+                return nil, fmt.Errorf("tool execution failed: %w", err)
+            }
+
+            allToolCalls = append(allToolCalls, toolResults...)
+
+            // 添加工具结果消息
+            for _, tr := range toolResults {
+                messages = append(messages, llm.Message{
+                    Role:       llm.RoleTool,
+                    ToolCallID: tr.CallID,
+                    Content:    tr.Result.Output,
+                    Name:       tr.ToolName,
+                    Timestamp:  tr.EndTime,
+                })
+            }
+
+            continue
+        }
+
+        // ... 处理其他停止原因 ...
+    }
+
+    execCtx.Logger.Error("Max turns exceeded")
+    return nil, fmt.Errorf("max turns (%d) exceeded", maxTurns)
+}
+
+func (a *BaseAgent) executeToolsWithLogging(
+    ctx context.Context,
+    toolCalls []*llm.ToolCall,
+    execCtx *ExecutionContext,
+) ([]*tool.CallResult, error) {
+    results := make([]*tool.CallResult, len(toolCalls))
+
+    for i, tc := range toolCalls {
+        // 记录工具调用
+        execCtx.LogToolCall(tc.Function.Name, tc.Function.Arguments)
+
+        startTime := time.Now()
+
+        t, err := a.toolRegistry.Get(tc.Function.Name)
+        if err != nil {
+            duration := time.Since(startTime)
+            errorMsg := fmt.Sprintf("tool not found: %v", err)
+            execCtx.LogToolResult(tc.Function.Name, false, errorMsg, duration)
+
+            results[i] = &tool.CallResult{
+                ToolName:  tc.Function.Name,
+                CallID:    tc.ID,
+                Result:    &tool.Result{Success: false, Error: errorMsg},
+                StartTime: startTime,
+                EndTime:   time.Now(),
+            }
+            continue
+        }
+
+        result, err := t.Execute(ctx, []byte(tc.Function.Arguments))
+        duration := time.Since(startTime)
+
+        if err != nil {
+            errorMsg := fmt.Sprintf("execution error: %v", err)
+            execCtx.LogToolResult(tc.Function.Name, false, errorMsg, duration)
+
+            results[i] = &tool.CallResult{
+                ToolName:  tc.Function.Name,
+                CallID:    tc.ID,
+                Result:    &tool.Result{Success: false, Error: errorMsg},
+                StartTime: startTime,
+                EndTime:   time.Now(),
+            }
+            continue
+        }
+
+        // 记录成功的工具结果
+        execCtx.LogToolResult(tc.Function.Name, result.Success, result.Output, duration)
+
+        results[i] = &tool.CallResult{
+            ToolName:  tc.Function.Name,
+            CallID:    tc.ID,
+            Params:    []byte(tc.Function.Arguments),
+            Result:    result,
+            StartTime: startTime,
+            EndTime:   time.Now(),
+        }
+    }
+
+    return results, nil
+}
+```
+
+**更新**: `pkg/agent/agent.go`
+
+在 Input 中添加 Logger：
+
+```go
+type Input struct {
+    Messages    []llm.Message
+    Task        string
+    MaxTurns    int
+    Temperature float32
+    Logger      *logger.Logger  // 新增
+}
+```
+
+#### 1.8 基础 CLI
 
 **文件**: `cmd/finta/main.go`
 
@@ -926,6 +1335,7 @@ import (
 
     "finta/internal/agent"
     "finta/internal/llm/openai"
+    "finta/internal/logger"
     "finta/internal/tool"
     "finta/internal/tool/builtin"
 
@@ -937,6 +1347,8 @@ var (
     model       string
     temperature float32
     maxTurns    int
+    verbose     bool
+    noColor     bool
 )
 
 func main() {
@@ -957,6 +1369,8 @@ func main() {
     chatCmd.Flags().StringVar(&model, "model", "gpt-4-turbo", "Model to use")
     chatCmd.Flags().Float32Var(&temperature, "temperature", 0.7, "Temperature")
     chatCmd.Flags().IntVar(&maxTurns, "max-turns", 10, "Maximum conversation turns")
+    chatCmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose output (debug mode)")
+    chatCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 
     rootCmd.AddCommand(chatCmd)
 
@@ -973,13 +1387,27 @@ func runChat(cmd *cobra.Command, args []string) error {
 
     task := args[0]
 
+    // 创建 Logger
+    logLevel := logger.LevelInfo
+    if verbose {
+        logLevel = logger.LevelDebug
+    }
+    log := logger.NewLogger(os.Stdout, logLevel)
+    if noColor {
+        log.SetColorMode(false)
+    }
+
     // 创建 LLM 客户端
+    log.Debug("Creating LLM client (model: %s)", model)
     llmClient := openai.NewClient(apiKey, model)
 
     // 创建工具注册表
+    log.Debug("Registering built-in tools")
     registry := tool.NewRegistry()
     registry.Register(builtin.NewReadTool())
     registry.Register(builtin.NewBashTool())
+
+    log.Info("Registered %d tools: read, bash", 2)
 
     // 创建 Agent
     systemPrompt := `You are a helpful AI assistant with access to tools.
@@ -992,28 +1420,27 @@ Always provide clear, concise responses.`
         MaxTurns:    maxTurns,
     })
 
-    // 运行 Agent
-    fmt.Printf("Running agent: %s\n", task)
-    fmt.Println("---")
+    log.Debug("Agent created with max_turns=%d, temperature=%.2f", maxTurns, temperature)
 
+    // 运行 Agent
     output, err := ag.Run(context.Background(), &agent.Input{
         Task:        task,
         Temperature: temperature,
+        Logger:      log,
     })
     if err != nil {
+        log.Error("Agent execution failed: %v", err)
         return err
     }
 
-    // 输出结果
-    fmt.Println(output.Result)
-    fmt.Println("---")
-    fmt.Printf("Tool calls made: %d\n", len(output.ToolCalls))
+    // 最终输出已经通过 logger 展示，这里不需要再打印
+    log.Debug("Agent completed successfully")
 
     return nil
 }
 ```
 
-#### 1.8 测试运行
+#### 1.9 测试运行
 
 创建简单的测试：
 
@@ -1024,9 +1451,77 @@ export OPENAI_API_KEY="your-api-key"
 # 构建
 go build -o finta cmd/finta/main.go
 
-# 测试基础功能
+# 测试基础功能（普通模式）
 ./finta chat "List files in the current directory"
-./finta chat "Read the go.mod file and tell me what it contains"
+
+# 测试详细输出（verbose 模式）
+./finta chat --verbose "Read the go.mod file and tell me what it contains"
+
+# 测试无颜色模式（适合日志文件）
+./finta chat --no-color "Check if there are any .go files"
+```
+
+**期望的输出示例**:
+
+```
+══════════════════════════════════════════════════════════════════════
+🚀 Session Started
+  List files in the current directory
+══════════════════════════════════════════════════════════════════════
+
+15:30:45 [INFO] Registered 2 tools: read, bash
+15:30:45 [INFO] Turn 1: Calling LLM...
+
+🔧 Tool Call: bash
+────────────────────────────────────────────────────────
+{
+  "command": "ls -la"
+}
+────────────────────────────────────────────────────────
+
+📊 Tool Result: bash [✅ Success] (234ms)
+────────────────────────────────────────────────────────
+total 48
+drwxr-xr-x  6 user user 4096 Dec 20 15:30 .
+drwxr-xr-x 20 user user 4096 Dec 20 15:25 ..
+-rw-r--r--  1 user user  156 Dec 20 15:20 go.mod
+-rw-r--r--  1 user user  892 Dec 20 15:22 go.sum
+drwxr-xr-x  3 user user 4096 Dec 20 15:30 cmd
+drwxr-xr-x  8 user user 4096 Dec 20 15:30 pkg
+────────────────────────────────────────────────────────
+
+15:30:46 [INFO] Turn 2: Calling LLM...
+
+💬 Agent Response
+────────────────────────────────────────────────────────
+I've listed the files in the current directory. Here's what I found:
+
+The directory contains:
+- `go.mod` and `go.sum`: Go module files
+- `cmd/`: Directory containing command-line applications
+- `pkg/`: Directory containing package code
+
+This appears to be a Go project with a standard project structure.
+────────────────────────────────────────────────────────
+
+══════════════════════════════════════════════════════════════════════
+✨ Session Completed
+  Duration: 1.234s | Tool Calls: 1
+══════════════════════════════════════════════════════════════════════
+```
+
+**添加 Logger 的辅助方法**：
+
+在 `pkg/logger/logger.go` 中补充：
+
+```go
+func (l *Logger) SetColorMode(enabled bool) {
+    l.colorMode = enabled
+}
+
+func (l *Logger) SetShowTime(enabled bool) {
+    l.showTime = enabled
+}
 ```
 
 ### Phase 1 完成标准
@@ -1035,8 +1530,12 @@ go build -o finta cmd/finta/main.go
 - ✅ LLM 客户端（OpenAI）可以正常调用
 - ✅ 工具系统可以注册和执行工具
 - ✅ Agent 可以运行 LLM + 工具的循环
+- ✅ **日志系统完整实现，支持彩色输出和分级日志**
+- ✅ **执行过程可视化，用户能清楚看到每一步**
+- ✅ **工具调用参数、结果、耗时都有展示**
 - ✅ CLI 可以接受任务并输出结果
 - ✅ 至少有 2 个工具可用（Read, Bash）
+- ✅ **支持 verbose 和 no-color 模式**
 
 ---
 
