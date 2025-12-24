@@ -108,8 +108,30 @@ func (l *Logger) ToolResult(toolName string, success bool, output string, durati
 			color = ColorRed
 		}
 
+		// Limit output to maximum 2 lines and 500 characters
+		const maxLines = 2
+		const maxLength = 500
+
+		lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+		displayOutput := output
+		truncatedLines := false
+
+		// First, limit to maximum 2 lines
+		if len(lines) > maxLines {
+			displayOutput = strings.Join(lines[:maxLines], "\n")
+			truncatedLines = true
+		}
+
+		// Then, limit to maximum 500 characters
+		if len(displayOutput) > maxLength {
+			displayOutput = displayOutput[:maxLength] + "..."
+		} else if truncatedLines {
+			// Add ellipsis if we truncated lines but not characters
+			displayOutput += "\n..."
+		}
+
 		header := fmt.Sprintf("📊 Tool Result: %s [%s] (%s)", toolName, status, duration)
-		l.printSection(color, header, output)
+		l.printSection(color, header, displayOutput)
 	}
 }
 

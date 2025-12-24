@@ -75,8 +75,9 @@ func (c *Client) convertMessages(msgs []llm.Message) []openai.ChatCompletionMess
 	result := make([]openai.ChatCompletionMessage, len(msgs))
 	for i, msg := range msgs {
 		ocMsg := openai.ChatCompletionMessage{
-			Role:    string(msg.Role),
-			Content: msg.Content,
+			Role:             string(msg.Role),
+			Content:          msg.Content,
+			ReasoningContent: msg.Reason,
 		}
 
 		// Convert tool calls
@@ -128,6 +129,7 @@ func (c *Client) convertResponse(resp openai.ChatCompletionResponse) *llm.ChatRe
 	result := &llm.ChatResponse{
 		Message: llm.Message{
 			Role:    llm.Role(msg.Role),
+			Reason:  msg.ReasoningContent,
 			Content: msg.Content,
 		},
 		Usage: llm.Usage{

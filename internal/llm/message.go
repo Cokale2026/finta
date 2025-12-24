@@ -13,6 +13,7 @@ const (
 
 type Message struct {
 	Role       Role
+	Reason     string
 	Content    string
 	ToolCalls  []*ToolCall
 	ToolCallID string
