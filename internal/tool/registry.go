@@ -1,7 +1,7 @@
 package tool
 
 import (
-	"finta/pkg/llm"
+	"finta/internal/llm"
 	"fmt"
 	"sync"
 )

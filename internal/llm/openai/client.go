@@ -2,7 +2,7 @@ package openai
 
 import (
 	"context"
-	"finta/pkg/llm"
+	"finta/internal/llm"
 
 	openai "github.com/sashabaranov/go-openai"
 )

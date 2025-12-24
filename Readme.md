@@ -57,6 +57,7 @@ finta/
 # 设置 OpenAI API Key
 
 export OPENAI_API_KEY="your-api-key"
+export OPENAI_API_BASE_URL="https://api.openai.com/v1"
 
 # 运行示例任务
 

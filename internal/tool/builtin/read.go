@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"finta/pkg/tool"
+	"finta/internal/tool"
 )
 
 type ReadTool struct{}

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
-	"finta/pkg/agent"
-	"finta/pkg/llm/openai"
-	"finta/pkg/tool"
-	"finta/pkg/tool/builtin"
+	"finta/internal/agent"
+	"finta/internal/llm/openai"
+	"finta/internal/tool"
+	"finta/internal/tool/builtin"
 
 	"github.com/spf13/cobra"
 )
@@ -35,7 +35,7 @@ func main() {
 		RunE:  runChat,
 	}
 
-	chatCmd.Flags().StringVar(&apiBaseURL, "api-base-url", "https://api.openai.com/v1", "OpenAI API base URL")
+	chatCmd.Flags().StringVar(&apiBaseURL, "api-base-url", os.Getenv("OPENAI_API_BASE_URL"), "OpenAI API base URL")
 	chatCmd.Flags().StringVar(&apiKey, "api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key")
 	chatCmd.Flags().StringVar(&model, "model", "gpt-4-turbo", "Model to use")
 	chatCmd.Flags().Float32Var(&temperature, "temperature", 0.7, "Temperature")

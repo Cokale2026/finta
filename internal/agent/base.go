@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"finta/pkg/llm"
-	"finta/pkg/tool"
+	"finta/internal/llm"
+	"finta/internal/tool"
 )
 
 type BaseAgent struct {

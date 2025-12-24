@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"time"
 
-	"finta/pkg/tool"
+	"finta/internal/tool"
 )
 
 type BashTool struct{}

@@ -5,6 +5,7 @@
 **目标**: 构建一个遵循 ClaudeCode 设计理念的通用 AI Agent 开发框架
 
 **核心特性**:
+
 - 可扩展的工具系统（支持并行/顺序执行）
 - 专门化 Agent（Explore、Plan、Execute 等）
 - MCP (Model Context Protocol) 集成
@@ -132,6 +133,7 @@ finta/
 ## Phase 1: 核心基础 (2-3 天)
 
 ### 目标
+
 构建最小可用的 Agent 框架，能够通过 CLI 运行一个简单的 agent，调用基础工具，与 OpenAI API 交互。
 
 ### 实现步骤
@@ -149,6 +151,7 @@ go get github.com/charmbracelet/glamour
 ```
 
 **更新后的 go.mod**:
+
 ```go
 module finta
 
@@ -310,8 +313,8 @@ package agent
 
 import (
     "context"
-    "finta/pkg/llm"
-    "finta/pkg/tool"
+    "finta/internal/llm"
+    "finta/internal/tool"
 )
 
 type Agent interface {
@@ -349,7 +352,7 @@ package openai
 
 import (
     "context"
-    "finta/pkg/llm"
+    "finta/internal/llm"
 
     openai "github.com/sashabaranov/go-openai"
 )
@@ -577,7 +580,7 @@ import (
     "fmt"
     "os"
 
-    "finta/pkg/tool"
+    "finta/internal/tool"
 )
 
 type ReadTool struct{}
@@ -646,7 +649,7 @@ import (
     "os/exec"
     "time"
 
-    "finta/pkg/tool"
+    "finta/internal/tool"
 )
 
 type BashTool struct{}
@@ -732,8 +735,8 @@ import (
     "fmt"
     "time"
 
-    "finta/pkg/llm"
-    "finta/pkg/tool"
+    "finta/internal/llm"
+    "finta/internal/tool"
 )
 
 type BaseAgent struct {
@@ -921,10 +924,10 @@ import (
     "fmt"
     "os"
 
-    "finta/pkg/agent"
-    "finta/pkg/llm/openai"
-    "finta/pkg/tool"
-    "finta/pkg/tool/builtin"
+    "finta/internal/agent"
+    "finta/internal/llm/openai"
+    "finta/internal/tool"
+    "finta/internal/tool/builtin"
 
     "github.com/spf13/cobra"
 )
@@ -1040,6 +1043,7 @@ go build -o finta cmd/finta/main.go
 ## Phase 2: 高级工具系统 (2-3 天)
 
 ### 目标
+
 实现完整的工具能力，包括并行执行、更多内置工具、流式输出等。
 
 ### 实现步骤
@@ -1058,7 +1062,7 @@ import (
     "sync"
     "time"
 
-    "finta/pkg/llm"
+    "finta/internal/llm"
 )
 
 type Executor struct {
@@ -1264,7 +1268,7 @@ import (
     "os"
     "path/filepath"
 
-    "finta/pkg/tool"
+    "finta/internal/tool"
 )
 
 type WriteTool struct{}
@@ -1347,7 +1351,7 @@ import (
     "path/filepath"
     "strings"
 
-    "finta/pkg/tool"
+    "finta/internal/tool"
 )
 
 type GlobTool struct{}
@@ -1439,7 +1443,7 @@ import (
     "fmt"
     "io"
 
-    "finta/pkg/llm"
+    "finta/internal/llm"
 
     openai "github.com/sashabaranov/go-openai"
 )
@@ -1563,6 +1567,7 @@ func (sw *StreamingWriter) WriteLine(content string) {
 ## Phase 3: 专门化 Agent (2-3 天)
 
 ### 目标
+
 实现不同类型的专门化 Agent，支持 Agent 嵌套和任务分发。
 
 ### 实现步骤
@@ -1621,9 +1626,9 @@ func (f *DefaultFactory) CreateAgent(agentType AgentType) (Agent, error) {
 package specialized
 
 import (
-    "finta/pkg/agent"
-    "finta/pkg/llm"
-    "finta/pkg/tool"
+    "finta/internal/agent"
+    "finta/internal/llm"
+    "finta/internal/tool"
 )
 
 func NewExploreAgent(client llm.Client, registry *tool.Registry) agent.Agent {
@@ -1672,9 +1677,9 @@ Always provide clear summaries of your findings.`
 package specialized
 
 import (
-    "finta/pkg/agent"
-    "finta/pkg/llm"
-    "finta/pkg/tool"
+    "finta/internal/agent"
+    "finta/internal/llm"
+    "finta/internal/tool"
 )
 
 func NewPlanAgent(client llm.Client, registry *tool.Registry) agent.Agent {
@@ -1727,8 +1732,8 @@ import (
     "encoding/json"
     "fmt"
 
-    "finta/pkg/agent"
-    "finta/pkg/tool"
+    "finta/internal/agent"
+    "finta/internal/tool"
 )
 
 type TaskTool struct {
@@ -1828,6 +1833,7 @@ func (t *TaskTool) Execute(ctx context.Context, params json.RawMessage) (*tool.R
 ## Phase 4: MCP 集成 (3-4 天)
 
 ### 目标
+
 完整实现 MCP (Model Context Protocol) 支持，能够加载和使用 MCP 服务器。
 
 ### 实现步骤
@@ -1839,6 +1845,7 @@ func (t *TaskTool) Execute(ctx context.Context, params json.RawMessage) (*tool.R
 参考 Go MCP SDK，实现基础的 JSON-RPC 2.0 客户端。
 
 核心方法：
+
 - Initialize
 - ListTools
 - CallTool
@@ -1901,6 +1908,7 @@ mcp:
 ## Phase 5: Hook 系统 (2 天)
 
 ### 目标
+
 实现生命周期 Hook 系统，支持用户自定义脚本在特定事件时执行。
 
 ### 实现步骤
@@ -2069,6 +2077,7 @@ func (r *Registry) Trigger(ctx context.Context, event *Event) ([]*Feedback, erro
 #### 5.4 集成到 Agent
 
 在 Agent 的关键位置触发 Hook：
+
 - Run 开始时：`EventAgentStart`
 - Run 结束时：`EventAgentComplete`
 - 工具调用前后：`EventToolCallBefore`, `EventToolCallAfter`
@@ -2086,6 +2095,7 @@ func (r *Registry) Trigger(ctx context.Context, event *Event) ([]*Feedback, erro
 ## Phase 6: Session 管理 (2 天)
 
 ### 目标
+
 实现会话持久化和上下文管理，支持长时间对话。
 
 ### 实现步骤
@@ -2099,7 +2109,7 @@ package session
 
 import (
     "context"
-    "finta/pkg/llm"
+    "finta/internal/llm"
     "time"
 )
 
@@ -2192,7 +2202,7 @@ package session
 
 import (
     "context"
-    "finta/pkg/llm"
+    "finta/internal/llm"
 )
 
 type Summarizer struct {
@@ -2217,6 +2227,7 @@ func (s *Summarizer) Summarize(ctx context.Context, messages []llm.Message) (str
 ## Phase 7: 配置系统 (1-2 天)
 
 ### 目标
+
 完整的 YAML 配置支持，可配置所有组件。
 
 ### 实现步骤
@@ -2349,6 +2360,7 @@ cli:
 ## Phase 8: 文档和完善 (2-3 天)
 
 ### 目标
+
 完善文档、示例和测试，确保框架可用性。
 
 ### 实现步骤
@@ -2358,6 +2370,7 @@ cli:
 **文件**: `docs/architecture.md`
 
 详细说明：
+
 - 整体架构
 - 核心组件
 - 数据流
@@ -2368,6 +2381,7 @@ cli:
 **文件**: `docs/development.md`
 
 包含：
+
 - 如何添加自定义工具
 - 如何创建专门化 Agent
 - 如何编写 Hook
@@ -2385,10 +2399,10 @@ import (
     "fmt"
     "os"
 
-    "finta/pkg/agent"
-    "finta/pkg/llm/openai"
-    "finta/pkg/tool"
-    "finta/pkg/tool/builtin"
+    "finta/internal/agent"
+    "finta/internal/llm/openai"
+    "finta/internal/tool"
+    "finta/internal/tool/builtin"
 )
 
 func main() {
@@ -2426,6 +2440,7 @@ func main() {
 **文件**: `README.md`
 
 包含：
+
 - 项目介绍
 - 快速开始
 - 核心特性
@@ -2437,6 +2452,7 @@ func main() {
 #### 8.5 单元测试
 
 为核心组件添加测试：
+
 - `pkg/tool/registry_test.go`
 - `pkg/agent/base_test.go`
 - `pkg/llm/openai/client_test.go`
@@ -2455,23 +2471,31 @@ func main() {
 ## 实现优先级建议
 
 ### 必须立即实现（MVP）
+
 **Phase 1**: 核心基础
+
 - 这是框架能运行的最小基础
 
 ### 重要但可以分步实现
+
 **Phase 2**: 高级工具系统
 **Phase 3**: 专门化 Agent
+
 - 这两个阶段让框架更加强大和实用
 
 ### 可以后续添加的功能
+
 **Phase 4**: MCP 集成
 **Phase 5**: Hook 系统
 **Phase 6**: Session 管理
+
 - 这些功能增强了框架的可扩展性和易用性
 
 ### 最后完善
+
 **Phase 7**: 配置系统
 **Phase 8**: 文档和完善
+
 - 让框架更加专业和易于使用
 
 ---
@@ -2479,25 +2503,30 @@ func main() {
 ## 关键技术决策
 
 ### 1. 为什么选择 Interface-based 设计？
+
 - **优点**: 最大化扩展性，便于测试
 - **缺点**: 代码略显冗长
 - **决策**: 接受冗长换取灵活性
 
 ### 2. 为什么使用 OpenAI 作为主要 LLM？
+
 - **优点**: API 成熟，工具调用支持好
 - **缺点**: 依赖外部服务
 - **决策**: 通过接口抽象，后续可轻松切换
 
 ### 3. 工具并行执行的复杂度如何处理？
+
 - **方案**: 启发式依赖分析 + 拓扑排序
 - **权衡**: 不追求完美的依赖检测，优先保证正确性
 
 ### 4. MCP 集成的边界在哪里？
+
 - **决策**: 支持核心协议（工具、资源、提示）
 - **暂不支持**: 采样等高级特性
 - **理由**: 先保证基础功能可用
 
 ### 5. Session 持久化为什么用 SQLite？
+
 - **优点**: 零配置，ACID 保证
 - **缺点**: 不适合分布式
 - **决策**: 针对本地 CLI 场景优化
@@ -2506,16 +2535,16 @@ func main() {
 
 ## 开发时间估算
 
-| 阶段 | 时间 | 累计 |
-|------|------|------|
-| Phase 1: 核心基础 | 2-3 天 | 3 天 |
-| Phase 2: 高级工具 | 2-3 天 | 6 天 |
-| Phase 3: 专门化 Agent | 2-3 天 | 9 天 |
-| Phase 4: MCP 集成 | 3-4 天 | 13 天 |
-| Phase 5: Hook 系统 | 2 天 | 15 天 |
-| Phase 6: Session 管理 | 2 天 | 17 天 |
-| Phase 7: 配置系统 | 1-2 天 | 19 天 |
-| Phase 8: 文档完善 | 2-3 天 | 22 天 |
+| 阶段                  | 时间   | 累计  |
+| --------------------- | ------ | ----- |
+| Phase 1: 核心基础     | 2-3 天 | 3 天  |
+| Phase 2: 高级工具     | 2-3 天 | 6 天  |
+| Phase 3: 专门化 Agent | 2-3 天 | 9 天  |
+| Phase 4: MCP 集成     | 3-4 天 | 13 天 |
+| Phase 5: Hook 系统    | 2 天   | 15 天 |
+| Phase 6: Session 管理 | 2 天   | 17 天 |
+| Phase 7: 配置系统     | 1-2 天 | 19 天 |
+| Phase 8: 文档完善     | 2-3 天 | 22 天 |
 
 **总计**: 约 3-4 周（全职开发）
 
@@ -2524,6 +2553,7 @@ func main() {
 ## 下一步行动
 
 1. **立即开始 Phase 1**
+
    - 创建目录结构
    - 实现核心接口
    - 完成 OpenAI 集成
@@ -2531,11 +2561,13 @@ func main() {
    - 创建简单 CLI
 
 2. **验证 Phase 1**
+
    - 能够运行一个简单的 agent
    - Agent 可以调用工具
    - 工具可以执行并返回结果
 
 3. **迭代开发**
+
    - 完成一个 Phase 后测试验证
    - 及时调整设计
    - 保持代码质量
