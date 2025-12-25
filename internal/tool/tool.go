@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"finta/internal/llm"
 )
 
 type Tool interface {
@@ -21,10 +23,11 @@ type Result struct {
 }
 
 type CallResult struct {
-	ToolName  string
-	CallID    string
-	Params    json.RawMessage
-	Result    *Result
-	StartTime time.Time
-	EndTime   time.Time
+	ToolName   string
+	CallID     string
+	Params     json.RawMessage
+	Result     *Result
+	StartTime  time.Time
+	EndTime    time.Time
+	ReActTrace *llm.ReActTrace // ReAct pattern trace (optional)
 }

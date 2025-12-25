@@ -2329,6 +2329,530 @@ func (t *TaskTool) Execute(ctx context.Context, params json.RawMessage) (*tool.R
 
 ---
 
+## Phase 3.5: ReAct 推理增强 (2 天)
+
+### 目标
+
+在现有 Agent 架构基础上添加 ReAct (Reasoning-Action-Observation) 模式支持，提供更透明的推理过程跟踪和调试能力。
+
+### 背景
+
+ReAct 模式将 Agent 的决策过程显式化为三个步骤：
+- **Thought (思考)**: Agent 的推理过程（为什么要这样做）
+- **Action (行动)**: 实际执行的工具调用
+- **Observation (观察)**: 工具执行的结果
+
+这种模式类似于 PDCA 循环的 Plan-Do-Check，有助于：
+1. 提高 Agent 决策的可解释性
+2. 便于调试和优化
+3. 增强用户对 Agent 行为的理解
+
+### 实现步骤
+
+#### 3.5.1 扩展 Message 结构
+
+**文件**: `internal/llm/message.go`
+
+在现有 Message 结构上添加 ReActTrace 字段：
+
+```go
+package llm
+
+import "time"
+
+type Role string
+
+const (
+    RoleSystem    Role = "system"
+    RoleUser      Role = "user"
+    RoleAssistant Role = "assistant"
+    RoleTool      Role = "tool"
+)
+
+type Message struct {
+    Role       Role
+    Reason     string      // 现有：Extended Thinking 支持
+    Content    string
+    ToolCalls  []*ToolCall
+    ToolCallID string
+    Name       string
+    Timestamp  time.Time
+
+    // 新增：ReAct 模式跟踪
+    ReActTrace *ReActTrace `json:"react_trace,omitempty"`
+}
+
+// ReActTrace 记录完整的 Thought-Action-Observation 循环
+type ReActTrace struct {
+    Thought     string         `json:"thought"`      // 为什么要执行这个操作？
+    Action      string         `json:"action"`       // 执行了什么操作？
+    Observation string         `json:"observation"`  // 观察到了什么结果？
+    Metadata    map[string]any `json:"metadata,omitempty"` // 附加信息（耗时、token 等）
+}
+```
+
+**设计要点**：
+
+1. **向后兼容**: `ReActTrace` 是指针类型且标记为 `omitempty`，不使用时为 nil
+2. **利用现有字段**: `Reason` 字段已存在用于 Extended Thinking，可直接作为 Thought 来源
+3. **独立性**: ReActTrace 是可选的，不影响现有的 Agent 执行流程
+
+#### 3.5.2 在 Agent 中捕获 ReAct 循环
+
+**文件**: `internal/agent/base.go`
+
+修改 `executeToolsWithLogging` 方法，在工具执行时捕获 T/A/O：
+
+```go
+func (a *BaseAgent) executeToolsWithLogging(
+    ctx context.Context,
+    toolCalls []*llm.ToolCall,
+    execCtx *ExecutionContext,
+) ([]*tool.CallResult, error) {
+    // 记录所有工具调用
+    for _, tc := range toolCalls {
+        execCtx.LogToolCall(tc.Function.Name, tc.Function.Arguments)
+    }
+
+    // 执行工具（使用 executor 处理并行/串行/混合执行）
+    results, err := a.toolExecutor.Execute(ctx, toolCalls)
+    if err != nil {
+        return nil, err
+    }
+
+    // 记录所有结果，并构建 ReActTrace
+    for _, result := range results {
+        duration := result.EndTime.Sub(result.StartTime)
+        execCtx.LogToolResult(result.ToolName, result.Result.Success, result.Result.Output, duration)
+
+        // 🆕 构建 ReActTrace（如果启用）
+        if execCtx.EnableReAct {
+            result.ReActTrace = &llm.ReActTrace{
+                Thought: execCtx.LastReason, // 从上一次 LLM 响应的 Reason 字段获取
+                Action:  fmt.Sprintf("%s(%s)", result.ToolName, formatParams(result.Params)),
+                Observation: result.Result.Output,
+                Metadata: map[string]any{
+                    "duration_ms": duration.Milliseconds(),
+                    "success":     result.Result.Success,
+                },
+            }
+        }
+    }
+
+    return results, nil
+}
+```
+
+**更新 Run 方法**：
+
+在 `Run` 方法中保存每次 LLM 响应的 `Reason` 字段：
+
+```go
+func (a *BaseAgent) Run(ctx context.Context, input *Input) (*Output, error) {
+    // ... 现有代码 ...
+
+    for turn := 0; turn < maxTurns; turn++ {
+        // ... LLM 调用 ...
+
+        resp, err := a.llmClient.Chat(ctx, &llm.ChatRequest{
+            Messages:    messages,
+            Tools:       a.toolRegistry.GetToolDefinitions(),
+            Temperature: input.Temperature,
+            MaxTokens:   a.config.MaxTokens,
+        })
+
+        // 🆕 保存 Reason 用于下一次工具调用的 Thought
+        if resp.Message.Reason != "" {
+            execCtx.LastReason = resp.Message.Reason
+            execCtx.LogReasoning(resp.Message.Reason)
+        }
+
+        // ... 继续执行 ...
+    }
+}
+```
+
+#### 3.5.3 增强 Logger 支持 ReAct 显示
+
+**文件**: `internal/logger/logger.go`
+
+添加专门的 ReAct 日志方法：
+
+```go
+// ReActThought 显示 Agent 的思考过程（黄色）
+func (l *Logger) ReActThought(content string) {
+    if l.level <= LevelAgent {
+        l.printSection(ColorYellow, "💭 Agent Thought", content)
+    }
+}
+
+// ReActAction 显示 Agent 的行动（青色）
+func (l *Logger) ReActAction(action string) {
+    if l.level <= LevelTool {
+        l.printSection(ColorCyan, "⚡ Action", action)
+    }
+}
+
+// ReActObservation 显示 Agent 观察到的结果（绿色/红色）
+func (l *Logger) ReActObservation(observation string, success bool) {
+    color := ColorGreen
+    emoji := "✅"
+    if !success {
+        color = ColorRed
+        emoji = "❌"
+    }
+
+    if l.level <= LevelTool {
+        l.printSection(color, fmt.Sprintf("%s Observation", emoji), observation)
+    }
+}
+
+// ReActCycle 显示完整的 ReAct 循环（用于调试模式）
+func (l *Logger) ReActCycle(trace *llm.ReActTrace) {
+    if l.level > LevelDebug {
+        return
+    }
+
+    separator := strings.Repeat("═", 60)
+
+    if l.colorMode {
+        fmt.Fprintf(l.writer, "\n%s%s═══ ReAct Cycle ═══%s\n", ColorBold, ColorMagenta, ColorReset)
+        fmt.Fprintf(l.writer, "%s💭 Thought:%s %s\n", ColorYellow, ColorReset, trace.Thought)
+        fmt.Fprintf(l.writer, "%s⚡ Action:%s %s\n", ColorCyan, ColorReset, trace.Action)
+        fmt.Fprintf(l.writer, "%s🔍 Observation:%s %s\n", ColorGreen, ColorReset, trace.Observation)
+        if len(trace.Metadata) > 0 {
+            fmt.Fprintf(l.writer, "%s📊 Metadata:%s %v\n", ColorGray, ColorReset, trace.Metadata)
+        }
+        fmt.Fprintf(l.writer, "%s%s%s\n\n", ColorMagenta, separator, ColorReset)
+    } else {
+        fmt.Fprintf(l.writer, "\n=== ReAct Cycle ===\n")
+        fmt.Fprintf(l.writer, "Thought: %s\n", trace.Thought)
+        fmt.Fprintf(l.writer, "Action: %s\n", trace.Action)
+        fmt.Fprintf(l.writer, "Observation: %s\n", trace.Observation)
+        fmt.Fprintf(l.writer, "%s\n\n", separator)
+    }
+}
+```
+
+#### 3.5.4 更新 ExecutionContext
+
+**文件**: `internal/agent/context.go`
+
+添加 ReAct 状态跟踪：
+
+```go
+type ExecutionContext struct {
+    Logger        *logger.Logger
+    StartTime     time.Time
+    CurrentTurn   int
+    TotalTurns    int
+    ToolCallCount int
+
+    // 🆕 ReAct 支持
+    EnableReAct   bool   // 是否启用 ReAct 模式
+    LastReason    string // 上一次 LLM 的 Reason（用于 Thought）
+}
+
+func NewExecutionContext(log *logger.Logger) *ExecutionContext {
+    return &ExecutionContext{
+        Logger:      log,
+        StartTime:   time.Now(),
+        EnableReAct: true, // 默认启用
+    }
+}
+
+// LogReActTrace 记录完整的 ReAct 循环
+func (ctx *ExecutionContext) LogReActTrace(trace *llm.ReActTrace) {
+    ctx.Logger.ReActCycle(trace)
+}
+```
+
+#### 3.5.5 更新 Agent 提示词
+
+**文件**: `internal/agent/types.go`
+
+在各个 Agent 的 system prompt 中添加 ReAct 引导：
+
+```go
+func (f *DefaultFactory) createGeneralAgent() (Agent, error) {
+    systemPrompt := `You are a helpful AI assistant with access to tools.
+You can read files, execute bash commands, write files, find files with glob
+patterns, and search files with grep.
+
+When solving tasks, follow the ReAct pattern:
+1. **Think**: Explain your reasoning before taking action
+2. **Act**: Use tools to gather information or make changes
+3. **Observe**: Analyze the results and plan next steps
+
+Always provide clear, concise responses.`
+
+    return NewBaseAgent(
+        "general",
+        systemPrompt,
+        f.llmClient,
+        f.toolRegistry,
+        &Config{
+            Model:              "gpt-4-turbo",
+            Temperature:        0.7,
+            MaxTokens:          4096,
+            MaxTurns:           20,
+            EnableParallelTools: true,
+            ToolExecutionMode:   tool.ExecutionModeMixed,
+        },
+    ), nil
+}
+
+func (f *DefaultFactory) createExploreAgent() (Agent, error) {
+    // ... 现有代码 ...
+
+    systemPrompt := `You are an expert codebase exploration agent.
+
+Your goal is to efficiently explore and understand codebases using the ReAct pattern:
+- **Think**: Before each action, explain what you're looking for and why
+- **Act**: Use read-only tools (read, glob, grep, bash)
+- **Observe**: Summarize findings and decide next exploration steps
+
+Best practices:
+1. Start with glob to find relevant files
+2. Use grep to search for specific patterns
+3. Read files to understand implementation details
+4. Be thorough but efficient
+5. Use bash for directory listings and simple queries
+
+Always provide clear summaries of your findings.`
+
+    return NewBaseAgent(
+        "explore",
+        systemPrompt,
+        f.llmClient,
+        exploreRegistry,
+        &Config{
+            Model:              "gpt-4-turbo",
+            Temperature:        0.3,
+            MaxTokens:          4096,
+            MaxTurns:           15,
+            EnableParallelTools: true,
+            ToolExecutionMode:   tool.ExecutionModeMixed,
+        },
+    ), nil
+}
+
+// Plan Agent 和 Execute Agent 也类似更新
+```
+
+#### 3.5.6 CLI 支持 ReAct 模式
+
+**文件**: `cmd/finta/main.go`
+
+添加 `--react` 标志：
+
+```go
+var (
+    apiBaseURL  string
+    apiKey      string
+    model       string
+    temperature float32
+    maxTurns    int
+    verbose     bool
+    noColor     bool
+    streaming   bool
+    parallel    bool
+    agentType   string
+    enableReAct bool // 🆕 新增
+)
+
+func main() {
+    // ... 现有代码 ...
+
+    chatCmd.Flags().BoolVar(&enableReAct, "react", true, "Enable ReAct (Reasoning-Action-Observation) pattern (default: true)")
+
+    // ... 其他代码 ...
+}
+
+func runChat(cmd *cobra.Command, args []string) error {
+    // ... 现有代码 ...
+
+    // 构建 input
+    input := &agent.Input{
+        Task:        task,
+        Logger:      log,
+        EnableReAct: enableReAct, // 🆕 传递 ReAct 标志
+    }
+
+    // ... 继续执行 ...
+}
+```
+
+#### 3.5.7 更新 Agent Input 结构
+
+**文件**: `internal/agent/agent.go`
+
+```go
+type Input struct {
+    Messages       []llm.Message
+    Task           string
+    MaxTurns       int
+    Temperature    float32
+    Logger         *logger.Logger
+    EnableStreaming bool
+    EnableReAct    bool // 🆕 新增
+}
+```
+
+### 输出示例
+
+启用 ReAct 模式后，CLI 输出将更加详细：
+
+```
+══════════════════════════════════════════════════════════════════════
+🚀 Session Started
+  List files and analyze go.mod
+══════════════════════════════════════════════════════════════════════
+
+15:30:45 [INFO] Turn 1: Calling LLM...
+
+💭 Agent Thought
+────────────────────────────────────────────────────────
+I need to first list the files in the current directory to see what's
+available, then read go.mod to understand the project dependencies.
+────────────────────────────────────────────────────────
+
+⚡ Action
+────────────────────────────────────────────────────────
+bash(command='ls -la')
+────────────────────────────────────────────────────────
+
+✅ Observation
+────────────────────────────────────────────────────────
+total 48
+drwxr-xr-x  6 user user 4096 Dec 25 15:30 .
+drwxr-xr-x 20 user user 4096 Dec 25 15:25 ..
+-rw-r--r--  1 user user  156 Dec 25 15:20 go.mod
+-rw-r--r--  1 user user  892 Dec 25 15:22 go.sum
+drwxr-xr-x  3 user user 4096 Dec 25 15:30 cmd
+drwxr-xr-x  8 user user 4096 Dec 25 15:30 internal
+────────────────────────────────────────────────────────
+
+[Debug mode: Complete ReAct Cycle logged]
+
+15:30:46 [INFO] Turn 2: Calling LLM...
+
+💭 Agent Thought
+────────────────────────────────────────────────────────
+Now I can see go.mod exists. Let me read it to analyze the dependencies.
+────────────────────────────────────────────────────────
+
+⚡ Action
+────────────────────────────────────────────────────────
+read(file_path='go.mod')
+────────────────────────────────────────────────────────
+
+✅ Observation
+────────────────────────────────────────────────────────
+module finta
+
+go 1.24.5
+
+require (
+    github.com/sashabaranov/go-openai v1.35.6
+    github.com/spf13/cobra v1.8.1
+)
+────────────────────────────────────────────────────────
+
+💬 Agent Response
+────────────────────────────────────────────────────────
+Based on my exploration:
+
+1. **Files Found**: The directory contains a Go project with standard structure
+2. **Dependencies**:
+   - go-openai v1.35.6 (OpenAI API client)
+   - cobra v1.8.1 (CLI framework)
+3. **Go Version**: 1.24.5
+
+This appears to be a CLI application that integrates with OpenAI's API.
+────────────────────────────────────────────────────────
+
+══════════════════════════════════════════════════════════════════════
+✨ Session Completed
+  Duration: 2.3s | Tool Calls: 2
+══════════════════════════════════════════════════════════════════════
+```
+
+### 测试策略
+
+#### 单元测试
+
+**文件**: `internal/llm/message_test.go`
+
+```go
+func TestReActTrace(t *testing.T) {
+    msg := llm.Message{
+        Role:    llm.RoleTool,
+        Content: "File read successfully",
+        ReActTrace: &llm.ReActTrace{
+            Thought:     "I need to read the config file",
+            Action:      "read(file_path='config.yaml')",
+            Observation: "File read successfully",
+            Metadata: map[string]any{
+                "duration_ms": 50,
+            },
+        },
+    }
+
+    // 验证 JSON 序列化
+    data, err := json.Marshal(msg)
+    assert.NoError(t, err)
+
+    var decoded llm.Message
+    err = json.Unmarshal(data, &decoded)
+    assert.NoError(t, err)
+
+    assert.Equal(t, "I need to read the config file", decoded.ReActTrace.Thought)
+    assert.Equal(t, 50, decoded.ReActTrace.Metadata["duration_ms"])
+}
+```
+
+#### 集成测试
+
+创建测试脚本验证完整的 ReAct 循环：
+
+```bash
+#!/bin/bash
+# test_react.sh
+
+export OPENAI_API_KEY="test-key"
+
+# 测试 1: 启用 ReAct 模式
+./finta chat --react "List files and read README.md" --verbose
+
+# 测试 2: 禁用 ReAct 模式（对比）
+./finta chat --react=false "List files and read README.md" --verbose
+
+# 测试 3: 探索 Agent 使用 ReAct
+./finta chat --agent-type explore --react "Find all Go files in internal/"
+```
+
+### 完成标准
+
+- ✅ `Message` 结构添加 `ReActTrace` 字段（可选，向后兼容）
+- ✅ Agent 在工具执行时捕获 Thought/Action/Observation
+- ✅ Logger 支持独立显示 Thought、Action、Observation
+- ✅ Debug 模式下显示完整的 ReAct 循环
+- ✅ 所有 Agent 类型的 system prompt 包含 ReAct 引导
+- ✅ CLI 支持 `--react` 标志控制 ReAct 模式
+- ✅ 现有功能完全不受影响（向后兼容）
+- ✅ Verbose 模式清晰展示推理过程
+- ✅ 单元测试和集成测试通过
+
+### 后续优化方向
+
+1. **ReAct 历史分析**: 添加工具统计 ReAct 循环中的常见模式
+2. **自动摘要**: 对长 Observation 自动生成摘要
+3. **可视化**: 生成 ReAct 循环的流程图（GraphViz/Mermaid）
+4. **持久化**: 将 ReActTrace 保存到 Session 中用于事后分析
+
+---
+
 ## Phase 4: MCP 集成 (3-4 天)
 
 ### 目标
@@ -2401,6 +2925,923 @@ mcp:
 - ✅ MCP 工具可以适配为 Finta 工具
 - ✅ 可以从配置加载多个 MCP 服务器
 - ✅ MCP 工具与内置工具无缝集成
+
+---
+
+## Phase 4.5: Skills 技能库系统 (3-4 天)
+
+### 目标
+
+构建可复用的 AI 技能库系统（类似 Claude Skills 和组织过程资产 OPA），让 Agent 能够重用经过验证的工作流程和最佳实践。
+
+### 背景
+
+在项目管理中，**组织过程资产（OPA - Organizational Process Assets）** 是宝贵的知识库，包括：
+- 经过验证的流程模板
+- 最佳实践文档
+- 历史项目的经验教训
+
+Skills 系统将这一概念应用到 AI Agent 中：
+- **复用性**: 一次定义，多次使用
+- **标准化**: 确保 Agent 遵循最佳实践
+- **可共享**: 团队成员可以共享技能定义
+- **版本控制**: YAML 格式便于 Git 管理
+
+### 实现步骤
+
+#### 4.5.1 Skill 接口设计
+
+**文件**: `internal/skill/skill.go`
+
+```go
+package skill
+
+import (
+    "context"
+    "time"
+
+    "finta/internal/agent"
+    "finta/internal/llm"
+)
+
+// Skill 代表一个可复用的 AI 能力
+type Skill interface {
+    // 基础元数据
+    Name() string
+    Description() string
+    Version() string
+    Tags() []string // 用于分类和搜索
+
+    // 执行技能
+    Execute(ctx context.Context, input *SkillInput) (*SkillOutput, error)
+
+    // 可选：技能依赖
+    Dependencies() []string // 依赖的其他技能
+}
+
+// SkillInput 技能执行的输入
+type SkillInput struct {
+    Task    string         // 具体任务描述
+    Context map[string]any // 上下文数据（文件列表、代码片段等）
+    AgentFactory agent.Factory // Agent 工厂（用于 WorkflowSkill）
+    Logger  interface{}    // Logger 实例
+}
+
+// SkillOutput 技能执行的输出
+type SkillOutput struct {
+    Result      string         // 执行结果（文本）
+    Data        map[string]any // 结构化数据
+    Messages    []llm.Message  // LLM 对话历史
+    ToolCalls   int            // 使用的工具调用次数
+    Duration    time.Duration  // 执行耗时
+}
+
+// Metadata 技能元数据
+type Metadata struct {
+    Name        string            `yaml:"name"`
+    Version     string            `yaml:"version"`
+    Description string            `yaml:"description"`
+    Tags        []string          `yaml:"tags"`
+    Author      string            `yaml:"author"`
+    CreatedAt   time.Time         `yaml:"created_at"`
+    UpdatedAt   time.Time         `yaml:"updated_at"`
+    Dependencies []string         `yaml:"dependencies,omitempty"`
+    Examples    []string          `yaml:"examples,omitempty"`
+}
+```
+
+**设计要点**：
+1. **接口抽象**: 支持多种技能实现方式
+2. **上下文传递**: 允许技能间共享数据
+3. **元数据丰富**: 便于发现和管理
+
+#### 4.5.2 两种 Skill 实现类型
+
+**文件**: `internal/skill/prompt_skill.go`
+
+```go
+package skill
+
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "finta/internal/agent"
+)
+
+// PromptSkill 基于提示词的简单技能（占 80%）
+// 适用场景：单一任务，明确的输入输出
+type PromptSkill struct {
+    metadata     Metadata
+    systemPrompt string      // Agent 的系统提示词
+    agentType    string      // 使用的 Agent 类型
+    maxTurns     int         // 最大轮次
+    temperature  float32     // 温度参数
+    examples     []Example   // 示例（few-shot learning）
+}
+
+type Example struct {
+    Input  string `yaml:"input"`
+    Output string `yaml:"output"`
+}
+
+func NewPromptSkill(meta Metadata, systemPrompt, agentType string) *PromptSkill {
+    return &PromptSkill{
+        metadata:     meta,
+        systemPrompt: systemPrompt,
+        agentType:    agentType,
+        maxTurns:     10,
+        temperature:  0.7,
+    }
+}
+
+func (s *PromptSkill) Name() string        { return s.metadata.Name }
+func (s *PromptSkill) Description() string { return s.metadata.Description }
+func (s *PromptSkill) Version() string     { return s.metadata.Version }
+func (s *PromptSkill) Tags() []string      { return s.metadata.Tags }
+func (s *PromptSkill) Dependencies() []string { return s.metadata.Dependencies }
+
+func (s *PromptSkill) Execute(ctx context.Context, input *SkillInput) (*SkillOutput, error) {
+    startTime := time.Now()
+
+    // 创建专门的 Agent
+    ag, err := input.AgentFactory.CreateAgent(agent.AgentType(s.agentType))
+    if err != nil {
+        return nil, fmt.Errorf("failed to create agent: %w", err)
+    }
+
+    // 运行 Agent（使用自定义的 system prompt）
+    agentInput := &agent.Input{
+        Task:        input.Task,
+        MaxTurns:    s.maxTurns,
+        Temperature: s.temperature,
+        Logger:      input.Logger.(*logger.Logger),
+    }
+
+    output, err := ag.Run(ctx, agentInput)
+    if err != nil {
+        return nil, fmt.Errorf("skill execution failed: %w", err)
+    }
+
+    return &SkillOutput{
+        Result:    output.Result,
+        Messages:  output.Messages,
+        ToolCalls: len(output.ToolCalls),
+        Duration:  time.Since(startTime),
+    }, nil
+}
+```
+
+**文件**: `internal/skill/workflow_skill.go`
+
+```go
+package skill
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+// WorkflowSkill 多步骤工作流技能（占 20%）
+// 适用场景：复杂任务，需要多个 Agent 协作
+type WorkflowSkill struct {
+    metadata Metadata
+    steps    []WorkflowStep
+}
+
+type WorkflowStep struct {
+    Name        string `yaml:"name"`
+    AgentType   string `yaml:"agent_type"`
+    Task        string `yaml:"task_template"` // 支持模板变量
+    Description string `yaml:"description"`
+    ContinueOnError bool `yaml:"continue_on_error"`
+}
+
+func NewWorkflowSkill(meta Metadata, steps []WorkflowStep) *WorkflowSkill {
+    return &WorkflowSkill{
+        metadata: meta,
+        steps:    steps,
+    }
+}
+
+func (s *WorkflowSkill) Name() string        { return s.metadata.Name }
+func (s *WorkflowSkill) Description() string { return s.metadata.Description }
+func (s *WorkflowSkill) Version() string     { return s.metadata.Version }
+func (s *WorkflowSkill) Tags() []string      { return s.metadata.Tags }
+func (s *WorkflowSkill) Dependencies() []string { return s.metadata.Dependencies }
+
+func (s *WorkflowSkill) Execute(ctx context.Context, input *SkillInput) (*SkillOutput, error) {
+    startTime := time.Now()
+    var allMessages []llm.Message
+    totalToolCalls := 0
+    results := make([]string, 0, len(s.steps))
+
+    for i, step := range s.steps {
+        // 创建 Agent
+        ag, err := input.AgentFactory.CreateAgent(agent.AgentType(step.AgentType))
+        if err != nil {
+            if step.ContinueOnError {
+                results = append(results, fmt.Sprintf("[Step %d FAILED: %v]", i+1, err))
+                continue
+            }
+            return nil, fmt.Errorf("step %d failed: %w", i+1, err)
+        }
+
+        // 替换模板变量（简单实现）
+        task := replaceTemplateVars(step.Task, input.Context)
+
+        // 执行步骤
+        agentInput := &agent.Input{
+            Task:     task,
+            MaxTurns: 10,
+            Logger:   input.Logger.(*logger.Logger),
+        }
+
+        output, err := ag.Run(ctx, agentInput)
+        if err != nil {
+            if step.ContinueOnError {
+                results = append(results, fmt.Sprintf("[Step %d FAILED: %v]", i+1, err))
+                continue
+            }
+            return nil, fmt.Errorf("step %d execution failed: %w", i+1, err)
+        }
+
+        // 累积结果
+        results = append(results, fmt.Sprintf("[Step %d: %s]\n%s", i+1, step.Name, output.Result))
+        allMessages = append(allMessages, output.Messages...)
+        totalToolCalls += len(output.ToolCalls)
+
+        // 将结果添加到上下文供后续步骤使用
+        input.Context[fmt.Sprintf("step_%d_result", i+1)] = output.Result
+    }
+
+    finalResult := strings.Join(results, "\n\n")
+
+    return &SkillOutput{
+        Result:    finalResult,
+        Data:      input.Context,
+        Messages:  allMessages,
+        ToolCalls: totalToolCalls,
+        Duration:  time.Since(startTime),
+    }, nil
+}
+
+func replaceTemplateVars(template string, context map[string]any) string {
+    result := template
+    for key, value := range context {
+        placeholder := fmt.Sprintf("{{.%s}}", key)
+        result = strings.ReplaceAll(result, placeholder, fmt.Sprintf("%v", value))
+    }
+    return result
+}
+```
+
+#### 4.5.3 Skill Registry
+
+**文件**: `internal/skill/registry.go`
+
+```go
+package skill
+
+import (
+    "fmt"
+    "strings"
+    "sync"
+)
+
+// Registry 技能注册表
+type Registry struct {
+    skills map[string]Skill
+    mu     sync.RWMutex
+}
+
+func NewRegistry() *Registry {
+    return &Registry{
+        skills: make(map[string]Skill),
+    }
+}
+
+// Register 注册技能
+func (r *Registry) Register(skill Skill) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+
+    name := skill.Name()
+    if _, exists := r.skills[name]; exists {
+        return fmt.Errorf("skill %s already registered", name)
+    }
+
+    r.skills[name] = skill
+    return nil
+}
+
+// Get 获取技能
+func (r *Registry) Get(name string) (Skill, error) {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    skill, exists := r.skills[name]
+    if !exists {
+        return nil, fmt.Errorf("skill %s not found", name)
+    }
+
+    return skill, nil
+}
+
+// List 列出所有技能
+func (r *Registry) List() []Skill {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    skills := make([]Skill, 0, len(r.skills))
+    for _, skill := range r.skills {
+        skills = append(skills, skill)
+    }
+
+    return skills
+}
+
+// Search 按标签搜索技能
+func (r *Registry) Search(tags []string) []Skill {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    results := make([]Skill, 0)
+
+    for _, skill := range r.skills {
+        if hasAnyTag(skill.Tags(), tags) {
+            results = append(results, skill)
+        }
+    }
+
+    return results
+}
+
+func hasAnyTag(skillTags, searchTags []string) bool {
+    for _, searchTag := range searchTags {
+        for _, skillTag := range skillTags {
+            if strings.EqualFold(skillTag, searchTag) {
+                return true
+            }
+        }
+    }
+    return false
+}
+```
+
+#### 4.5.4 YAML Storage
+
+**文件**: `internal/skill/storage.go`
+
+```go
+package skill
+
+import (
+    "fmt"
+    "os"
+    "path/filepath"
+    "gopkg.in/yaml.v3"
+)
+
+// SkillDefinition YAML 技能定义
+type SkillDefinition struct {
+    Metadata     Metadata       `yaml:"metadata"`
+    Type         string         `yaml:"type"` // "prompt" or "workflow"
+    SystemPrompt string         `yaml:"system_prompt,omitempty"`
+    AgentType    string         `yaml:"agent_type,omitempty"`
+    MaxTurns     int            `yaml:"max_turns,omitempty"`
+    Temperature  float32        `yaml:"temperature,omitempty"`
+    Examples     []Example      `yaml:"examples,omitempty"`
+    Steps        []WorkflowStep `yaml:"steps,omitempty"`
+}
+
+// LoadFromYAML 从 YAML 文件加载技能
+func LoadFromYAML(filePath string) (Skill, error) {
+    data, err := os.ReadFile(filePath)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read file: %w", err)
+    }
+
+    var def SkillDefinition
+    if err := yaml.Unmarshal(data, &def); err != nil {
+        return nil, fmt.Errorf("failed to parse YAML: %w", err)
+    }
+
+    // 验证
+    if err := validateDefinition(&def); err != nil {
+        return nil, fmt.Errorf("invalid skill definition: %w", err)
+    }
+
+    // 根据类型创建技能
+    switch def.Type {
+    case "prompt":
+        skill := NewPromptSkill(def.Metadata, def.SystemPrompt, def.AgentType)
+        if def.MaxTurns > 0 {
+            skill.maxTurns = def.MaxTurns
+        }
+        if def.Temperature > 0 {
+            skill.temperature = def.Temperature
+        }
+        skill.examples = def.Examples
+        return skill, nil
+
+    case "workflow":
+        return NewWorkflowSkill(def.Metadata, def.Steps), nil
+
+    default:
+        return nil, fmt.Errorf("unknown skill type: %s", def.Type)
+    }
+}
+
+// LoadAllFromDirectory 加载目录中所有 YAML 技能
+func LoadAllFromDirectory(dirPath string) ([]Skill, error) {
+    files, err := filepath.Glob(filepath.Join(dirPath, "*.yaml"))
+    if err != nil {
+        return nil, err
+    }
+
+    skills := make([]Skill, 0, len(files))
+
+    for _, file := range files {
+        skill, err := LoadFromYAML(file)
+        if err != nil {
+            // 记录错误但继续加载其他技能
+            fmt.Fprintf(os.Stderr, "Warning: failed to load skill from %s: %v\n", file, err)
+            continue
+        }
+        skills = append(skills, skill)
+    }
+
+    return skills, nil
+}
+
+func validateDefinition(def *SkillDefinition) error {
+    if def.Metadata.Name == "" {
+        return fmt.Errorf("skill name is required")
+    }
+    if def.Type == "" {
+        return fmt.Errorf("skill type is required")
+    }
+    if def.Type == "prompt" && def.SystemPrompt == "" {
+        return fmt.Errorf("system_prompt is required for prompt skills")
+    }
+    if def.Type == "workflow" && len(def.Steps) == 0 {
+        return fmt.Errorf("steps are required for workflow skills")
+    }
+    return nil
+}
+```
+
+#### 4.5.5 Skill Tool
+
+**文件**: `internal/tool/builtin/skill.go`
+
+```go
+package builtin
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+
+    "finta/internal/skill"
+    "finta/internal/tool"
+)
+
+type SkillTool struct {
+    registry *skill.Registry
+    factory  agent.Factory
+}
+
+func NewSkillTool(registry *skill.Registry, factory agent.Factory) *SkillTool {
+    return &SkillTool{
+        registry: registry,
+        factory:  factory,
+    }
+}
+
+func (t *SkillTool) Name() string {
+    return "skill"
+}
+
+func (t *SkillTool) Description() string {
+    return "Execute a registered skill (reusable AI capability)"
+}
+
+func (t *SkillTool) Parameters() map[string]any {
+    return map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "name": map[string]any{
+                "type":        "string",
+                "description": "Name of the skill to execute",
+            },
+            "task": map[string]any{
+                "type":        "string",
+                "description": "Task description for the skill",
+            },
+            "context": map[string]any{
+                "type":        "object",
+                "description": "Additional context data (optional)",
+            },
+        },
+        "required": []string{"name", "task"},
+    }
+}
+
+func (t *SkillTool) Execute(ctx context.Context, params json.RawMessage) (*tool.Result, error) {
+    var p struct {
+        Name    string         `json:"name"`
+        Task    string         `json:"task"`
+        Context map[string]any `json:"context"`
+    }
+
+    if err := json.Unmarshal(params, &p); err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("invalid parameters: %v", err),
+        }, nil
+    }
+
+    // 获取技能
+    sk, err := t.registry.Get(p.Name)
+    if err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("skill not found: %v", err),
+        }, nil
+    }
+
+    // 获取 logger from context
+    logger := agent.GetLoggerFromContext(ctx)
+
+    // 执行技能
+    input := &skill.SkillInput{
+        Task:         p.Task,
+        Context:      p.Context,
+        AgentFactory: t.factory,
+        Logger:       logger,
+    }
+
+    output, err := sk.Execute(ctx, input)
+    if err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("skill execution failed: %v", err),
+        }, nil
+    }
+
+    return &tool.Result{
+        Success: true,
+        Output:  output.Result,
+        Data: map[string]any{
+            "skill_name":  sk.Name(),
+            "tool_calls":  output.ToolCalls,
+            "duration_ms": output.Duration.Milliseconds(),
+        },
+    }, nil
+}
+```
+
+#### 4.5.6 内置技能示例
+
+**文件**: `~/.finta/skills/code_review.yaml`
+
+```yaml
+metadata:
+  name: code_review
+  version: 1.0.0
+  description: 系统化的代码审查流程
+  tags: [code-quality, review, best-practices]
+  author: finta-team
+
+type: workflow
+
+steps:
+  - name: 代码发现
+    agent_type: explore
+    task_template: "分析 {{.file_path}} 的代码结构"
+    description: 探索代码文件并理解其结构
+
+  - name: 质量检查
+    agent_type: general
+    task_template: "审查代码质量，检查：1) 命名规范 2) 代码重复 3) 错误处理 4) 性能问题"
+    description: 执行质量检查
+
+  - name: 安全审计
+    agent_type: general
+    task_template: "检查安全问题：1) SQL 注入 2) XSS 3) CSRF 4) 敏感数据泄露"
+    description: 安全漏洞扫描
+
+  - name: 生成报告
+    agent_type: general
+    task_template: "基于前述分析，生成 Markdown 格式的代码审查报告"
+    description: 汇总并生成审查报告
+```
+
+**文件**: `~/.finta/skills/commit.yaml`
+
+```yaml
+metadata:
+  name: commit
+  version: 1.0.0
+  description: Git 提交信息规范化
+  tags: [git, commit, best-practices]
+  author: finta-team
+
+type: prompt
+
+agent_type: general
+max_turns: 5
+temperature: 0.5
+
+system_prompt: |
+  你是一个 Git 提交信息专家。根据代码变更生成符合约定式提交规范的提交信息。
+
+  格式：
+  <type>(<scope>): <subject>
+
+  <body>
+
+  <footer>
+
+  类型（type）：
+  - feat: 新功能
+  - fix: 修复
+  - docs: 文档
+  - style: 格式
+  - refactor: 重构
+  - test: 测试
+  - chore: 构建/工具
+
+  示例：
+  feat(auth): add OAuth2 login support
+
+  - Implement OAuth2 flow
+  - Add token refresh mechanism
+  - Update user model
+
+  Closes #123
+
+examples:
+  - input: "添加了用户登录功能，包括密码加密和会话管理"
+    output: "feat(auth): implement user login with password encryption\n\n- Add bcrypt password hashing\n- Implement session management\n- Add login endpoint"
+
+  - input: "修复了空指针异常的 bug"
+    output: "fix(core): prevent nil pointer dereference\n\nFixed panic in user handler when email is nil\n\nCloses #456"
+```
+
+**文件**: `~/.finta/skills/debug.yaml`
+
+```yaml
+metadata:
+  name: debug
+  version: 1.0.0
+  description: 系统化的调试流程
+  tags: [debug, troubleshooting]
+  author: finta-team
+
+type: workflow
+
+steps:
+  - name: 问题复现
+    agent_type: general
+    task_template: "分析错误信息：{{.error_message}}，尝试理解问题原因"
+    description: 理解和复现问题
+
+  - name: 代码追踪
+    agent_type: explore
+    task_template: "查找相关代码文件，定位问题可能出现的位置"
+    description: 追踪代码路径
+
+  - name: 根因分析
+    agent_type: general
+    task_template: "基于代码分析，确定根本原因"
+    description: 识别根本原因
+
+  - name: 修复建议
+    agent_type: general
+    task_template: "提供修复方案和预防措施"
+    description: 生成修复建议
+```
+
+**更多内置技能**：
+
+- `refactor.yaml`: 重构工作流
+- `test_plan.yaml`: 测试计划生成
+- `documentation.yaml`: 文档生成
+
+#### 4.5.7 CLI 集成
+
+**文件**: `cmd/finta/main.go`
+
+添加技能相关命令：
+
+```go
+func main() {
+    rootCmd := &cobra.Command{
+        Use:   "finta",
+        Short: "Finta AI Agent Framework",
+    }
+
+    // 现有的 chat 命令
+    chatCmd := &cobra.Command{...}
+
+    // 新增：skill 命令组
+    skillCmd := &cobra.Command{
+        Use:   "skill",
+        Short: "Manage and execute skills",
+    }
+
+    // skill list - 列出所有技能
+    skillListCmd := &cobra.Command{
+        Use:   "list",
+        Short: "List all available skills",
+        RunE:  runSkillList,
+    }
+
+    // skill run - 执行技能
+    skillRunCmd := &cobra.Command{
+        Use:   "run <skill-name> <task>",
+        Short: "Execute a skill",
+        Args:  cobra.MinimumNArgs(2),
+        RunE:  runSkillRun,
+    }
+
+    // skill info - 查看技能详情
+    skillInfoCmd := &cobra.Command{
+        Use:   "info <skill-name>",
+        Short: "Show skill information",
+        Args:  cobra.ExactArgs(1),
+        RunE:  runSkillInfo,
+    }
+
+    skillCmd.AddCommand(skillListCmd, skillRunCmd, skillInfoCmd)
+    rootCmd.AddCommand(chatCmd, skillCmd)
+
+    rootCmd.Execute()
+}
+
+func runSkillList(cmd *cobra.Command, args []string) error {
+    // 加载技能
+    skillsDir := filepath.Join(os.Getenv("HOME"), ".finta", "skills")
+    skills, err := skill.LoadAllFromDirectory(skillsDir)
+    if err != nil {
+        return err
+    }
+
+    // 显示技能列表
+    fmt.Println("Available Skills:")
+    fmt.Println(strings.Repeat("=", 60))
+
+    for _, sk := range skills {
+        fmt.Printf("\n📦 %s (v%s)\n", sk.Name(), sk.Version())
+        fmt.Printf("   %s\n", sk.Description())
+        if len(sk.Tags()) > 0 {
+            fmt.Printf("   Tags: %s\n", strings.Join(sk.Tags(), ", "))
+        }
+    }
+
+    return nil
+}
+
+func runSkillRun(cmd *cobra.Command, args []string) error {
+    skillName := args[0]
+    task := args[1]
+
+    // 加载技能
+    skillsDir := filepath.Join(os.Getenv("HOME"), ".finta", "skills")
+    skills, err := skill.LoadAllFromDirectory(skillsDir)
+    if err != nil {
+        return err
+    }
+
+    // 注册技能
+    registry := skill.NewRegistry()
+    for _, sk := range skills {
+        registry.Register(sk)
+    }
+
+    // 获取技能
+    sk, err := registry.Get(skillName)
+    if err != nil {
+        return fmt.Errorf("skill not found: %s", skillName)
+    }
+
+    // 创建 LLM 客户端和工具
+    llmClient := openai.NewClient(os.Getenv("OPENAI_API_KEY"), "gpt-4-turbo")
+    toolRegistry := tool.NewRegistry()
+    // ... 注册基础工具
+
+    factory := agent.NewDefaultFactory(llmClient, toolRegistry)
+    log := logger.NewLogger(os.Stdout, logger.LevelInfo)
+
+    // 执行技能
+    ctx := context.Background()
+    output, err := sk.Execute(ctx, &skill.SkillInput{
+        Task:         task,
+        AgentFactory: factory,
+        Logger:       log,
+    })
+    if err != nil {
+        return fmt.Errorf("skill execution failed: %w", err)
+    }
+
+    // 显示结果
+    fmt.Println("\n" + output.Result)
+    fmt.Printf("\n✨ Completed in %s (%d tool calls)\n", output.Duration, output.ToolCalls)
+
+    return nil
+}
+```
+
+### 使用示例
+
+```bash
+# 列出所有技能
+$ finta skill list
+
+Available Skills:
+============================================================
+
+📦 code_review (v1.0.0)
+   系统化的代码审查流程
+   Tags: code-quality, review, best-practices
+
+📦 commit (v1.0.0)
+   Git 提交信息规范化
+   Tags: git, commit, best-practices
+
+📦 debug (v1.0.0)
+   系统化的调试流程
+   Tags: debug, troubleshooting
+
+# 执行技能
+$ finta skill run code_review "审查 internal/agent/base.go"
+
+[Step 1: 代码发现]
+文件 internal/agent/base.go 包含 BaseAgent 的核心实现...
+
+[Step 2: 质量检查]
+✅ 命名规范良好
+⚠️ 发现重复代码：executeToolsWithLogging 和 executeTools 有相似逻辑
+✅ 错误处理完善
+
+[Step 3: 安全审计]
+✅ 未发现安全问题
+
+[Step 4: 生成报告]
+# 代码审查报告：internal/agent/base.go
+
+## 总体评分：8/10
+
+## 优点
+- 清晰的接口设计
+- 完善的错误处理
+
+## 改进建议
+1. 考虑将重复代码提取为辅助函数
+2. 添加单元测试
+
+✨ Completed in 12.5s (8 tool calls)
+
+# 查看技能详情
+$ finta skill info commit
+
+📦 commit (v1.0.0)
+Author: finta-team
+Description: Git 提交信息规范化
+Tags: git, commit, best-practices
+Type: Prompt Skill
+Agent: general
+
+Examples:
+1. Input: "添加了用户登录功能"
+   Output: "feat(auth): implement user login..."
+```
+
+### 完成标准
+
+- ✅ Skill 接口定义（支持 PromptSkill 和 WorkflowSkill）
+- ✅ Skill Registry 实现（注册、获取、搜索）
+- ✅ YAML 存储和加载
+- ✅ Skill Tool 集成到工具系统
+- ✅ 6 个内置技能示例
+- ✅ CLI 支持 `skill list/run/info` 命令
+- ✅ 技能可以嵌套调用（通过 AgentFactory）
+- ✅ YAML 文件可以版本控制
+- ✅ 技能加载时间 < 100ms
+- ✅ 用户可以在 30 分钟内创建自定义技能
+
+### 后续优化方向
+
+1. **技能市场**: 支持从远程仓库下载技能
+2. **技能测试**: 添加技能的单元测试框架
+3. **参数验证**: 为技能添加 JSON Schema 验证
+4. **技能依赖**: 自动解析和加载依赖技能
+5. **性能优化**: 技能执行结果缓存
 
 ---
 
@@ -2587,7 +4028,861 @@ func (r *Registry) Trigger(ctx context.Context, event *Event) ([]*Feedback, erro
 - ✅ Shell Hook 实现
 - ✅ Agent 集成 Hook 触发
 - ✅ 配置文件支持定义 Hook
-- ✅ Hook 反馈可以影响执行流程
+- ✅ Hook 反馈可以影响流程
+
+---
+
+## Phase 5.5: WBS 任务管理 (2-3 天)
+
+### 目标
+
+实现基于工作分解结构（WBS）的任务管理系统，让 Agent 能够系统化地分解和执行复杂任务，追踪任务状态和依赖关系。
+
+### 背景
+
+**工作分解结构（WBS - Work Breakdown Structure）** 是项目管理中的核心概念：
+- **层次化**: 将大任务分解为可管理的小任务
+- **可追踪**: 每个任务有明确的状态和完成标准
+- **依赖管理**: 任务间有明确的先后关系
+- **进度可视化**: 可以清晰看到整体进度
+
+在 AI Agent 环境中，WBS 使得：
+1. **Plan Agent** 可以输出结构化的任务分解
+2. **Execute Agent** 可以按依赖关系执行任务
+3. **General Agent** 可以查询和更新任务状态
+4. 用户可以清楚看到 Agent 的工作进度
+
+### 实现步骤
+
+#### 5.5.1 Task 模型
+
+**文件**: `internal/task/task.go`
+
+```go
+package task
+
+import (
+    "fmt"
+    "time"
+)
+
+// TaskStatus 任务状态生命周期
+type TaskStatus string
+
+const (
+    StatusPending    TaskStatus = "pending"     // 待执行
+    StatusInProgress TaskStatus = "in_progress" // 执行中
+    StatusBlocked    TaskStatus = "blocked"     // 被阻塞
+    StatusCompleted  TaskStatus = "completed"   // 已完成
+    StatusFailed     TaskStatus = "failed"      // 失败
+)
+
+// Task 任务模型
+type Task struct {
+    ID           string         `json:"id"`
+    ParentID     string         `json:"parent_id,omitempty"`     // 父任务 ID（用于层次结构）
+    Title        string         `json:"title"`
+    Description  string         `json:"description"`
+    Status       TaskStatus     `json:"status"`
+    Priority     int            `json:"priority"`                 // 1-5 (1=最高)
+    Dependencies []string       `json:"dependencies,omitempty"`   // 依赖的任务 IDs
+    Assignee     string         `json:"assignee,omitempty"`       // Agent 类型或名称
+    Metadata     map[string]any `json:"metadata,omitempty"`       // 附加数据
+    CreatedAt    time.Time      `json:"created_at"`
+    UpdatedAt    time.Time      `json:"updated_at"`
+    StartedAt    *time.Time     `json:"started_at,omitempty"`
+    CompletedAt  *time.Time     `json:"completed_at,omitempty"`
+}
+
+// NewTask 创建新任务
+func NewTask(title, description string) *Task {
+    now := time.Now()
+    return &Task{
+        ID:          generateID(),
+        Title:       title,
+        Description: description,
+        Status:      StatusPending,
+        Priority:    3, // 默认中等优先级
+        Metadata:    make(map[string]any),
+        CreatedAt:   now,
+        UpdatedAt:   now,
+    }
+}
+
+// CanStart 检查任务是否可以开始（依赖都已完成）
+func (t *Task) CanStart(registry *Registry) bool {
+    if t.Status != StatusPending {
+        return false
+    }
+
+    for _, depID := range t.Dependencies {
+        dep, err := registry.Get(depID)
+        if err != nil || dep.Status != StatusCompleted {
+            return false
+        }
+    }
+
+    return true
+}
+
+// Start 开始任务
+func (t *Task) Start() error {
+    if t.Status != StatusPending {
+        return fmt.Errorf("task %s is not pending", t.ID)
+    }
+
+    now := time.Now()
+    t.Status = StatusInProgress
+    t.StartedAt = &now
+    t.UpdatedAt = now
+
+    return nil
+}
+
+// Complete 完成任务
+func (t *Task) Complete() error {
+    if t.Status != StatusInProgress {
+        return fmt.Errorf("task %s is not in progress", t.ID)
+    }
+
+    now := time.Now()
+    t.Status = StatusCompleted
+    t.CompletedAt = &now
+    t.UpdatedAt = now
+
+    return nil
+}
+
+// Fail 标记任务失败
+func (t *Task) Fail(reason string) error {
+    if t.Status == StatusCompleted {
+        return fmt.Errorf("cannot fail completed task %s", t.ID)
+    }
+
+    t.Status = StatusFailed
+    t.Metadata["failure_reason"] = reason
+    t.UpdatedAt = time.Now()
+
+    return nil
+}
+
+// Block 标记任务被阻塞
+func (t *Task) Block(reason string) {
+    t.Status = StatusBlocked
+    t.Metadata["block_reason"] = reason
+    t.UpdatedAt = time.Now()
+}
+
+func generateID() string {
+    // 简单实现：使用时间戳 + 随机数
+    return fmt.Sprintf("task-%d-%04d", time.Now().Unix(), time.Now().Nanosecond()%10000)
+}
+```
+
+#### 5.5.2 Task Registry
+
+**文件**: `internal/task/registry.go`
+
+```go
+package task
+
+import (
+    "fmt"
+    "sort"
+    "sync"
+)
+
+// Registry 任务注册表
+type Registry struct {
+    tasks map[string]*Task
+    mu    sync.RWMutex
+}
+
+func NewRegistry() *Registry {
+    return &Registry{
+        tasks: make(map[string]*Task),
+    }
+}
+
+// Create 创建任务
+func (r *Registry) Create(task *Task) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+
+    if task.ID == "" {
+        task.ID = generateID()
+    }
+
+    if _, exists := r.tasks[task.ID]; exists {
+        return fmt.Errorf("task %s already exists", task.ID)
+    }
+
+    r.tasks[task.ID] = task
+    return nil
+}
+
+// Get 获取任务
+func (r *Registry) Get(id string) (*Task, error) {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    task, exists := r.tasks[id]
+    if !exists {
+        return nil, fmt.Errorf("task %s not found", id)
+    }
+
+    return task, nil
+}
+
+// Update 更新任务
+func (r *Registry) Update(task *Task) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+
+    if _, exists := r.tasks[task.ID]; !exists {
+        return fmt.Errorf("task %s not found", task.ID)
+    }
+
+    task.UpdatedAt = time.Now()
+    r.tasks[task.ID] = task
+
+    return nil
+}
+
+// Delete 删除任务
+func (r *Registry) Delete(id string) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+
+    if _, exists := r.tasks[id]; !exists {
+        return fmt.Errorf("task %s not found", id)
+    }
+
+    delete(r.tasks, id)
+    return nil
+}
+
+// List 列出所有任务
+func (r *Registry) List() []*Task {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    tasks := make([]*Task, 0, len(r.tasks))
+    for _, task := range r.tasks {
+        tasks = append(tasks, task)
+    }
+
+    return tasks
+}
+
+// GetByStatus 按状态查询任务
+func (r *Registry) GetByStatus(status TaskStatus) []*Task {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    results := make([]*Task, 0)
+
+    for _, task := range r.tasks {
+        if task.Status == status {
+            results = append(results, task)
+        }
+    }
+
+    return results
+}
+
+// GetByParent 获取子任务
+func (r *Registry) GetByParent(parentID string) []*Task {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    results := make([]*Task, 0)
+
+    for _, task := range r.tasks {
+        if task.ParentID == parentID {
+            results = append(results, task)
+        }
+    }
+
+    return results
+}
+
+// GetRootTasks 获取根任务（没有父任务的任务）
+func (r *Registry) GetRootTasks() []*Task {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    results := make([]*Task, 0)
+
+    for _, task := range r.tasks {
+        if task.ParentID == "" {
+            results = append(results, task)
+        }
+    }
+
+    return results
+}
+
+// GetNextTasks 获取可以开始的任务（依赖已满足，按优先级排序）
+func (r *Registry) GetNextTasks() []*Task {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    results := make([]*Task, 0)
+
+    for _, task := range r.tasks {
+        if task.CanStart(r) {
+            results = append(results, task)
+        }
+    }
+
+    // 按优先级排序（优先级高的在前）
+    sort.Slice(results, func(i, j int) bool {
+        return results[i].Priority < results[j].Priority // 1 > 5
+    })
+
+    return results
+}
+
+// AddDependency 添加依赖关系
+func (r *Registry) AddDependency(taskID, dependsOnID string) error {
+    r.mu.Lock()
+    defer r.mu.Unlock()
+
+    task, exists := r.tasks[taskID]
+    if !exists {
+        return fmt.Errorf("task %s not found", taskID)
+    }
+
+    if _, exists := r.tasks[dependsOnID]; !exists {
+        return fmt.Errorf("dependency task %s not found", dependsOnID)
+    }
+
+    // 检查循环依赖
+    if r.hasCircularDependency(taskID, dependsOnID) {
+        return fmt.Errorf("circular dependency detected")
+    }
+
+    // 添加依赖
+    for _, dep := range task.Dependencies {
+        if dep == dependsOnID {
+            return nil // 已存在
+        }
+    }
+
+    task.Dependencies = append(task.Dependencies, dependsOnID)
+    task.UpdatedAt = time.Now()
+
+    return nil
+}
+
+// hasCircularDependency 检测循环依赖（深度优先搜索）
+func (r *Registry) hasCircularDependency(taskID, newDepID string) bool {
+    visited := make(map[string]bool)
+    return r.dfsCircular(newDepID, taskID, visited)
+}
+
+func (r *Registry) dfsCircular(current, target string, visited map[string]bool) bool {
+    if current == target {
+        return true
+    }
+
+    if visited[current] {
+        return false
+    }
+
+    visited[current] = true
+
+    task, exists := r.tasks[current]
+    if !exists {
+        return false
+    }
+
+    for _, dep := range task.Dependencies {
+        if r.dfsCircular(dep, target, visited) {
+            return true
+        }
+    }
+
+    return false
+}
+
+// GetProgress 获取整体进度
+func (r *Registry) GetProgress() (completed, total int) {
+    r.mu.RLock()
+    defer r.mu.RUnlock()
+
+    total = len(r.tasks)
+    for _, task := range r.tasks {
+        if task.Status == StatusCompleted {
+            completed++
+        }
+    }
+
+    return
+}
+```
+
+#### 5.5.3 WBS Tool
+
+**文件**: `internal/tool/builtin/wbs.go`
+
+```go
+package builtin
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "strings"
+
+    "finta/internal/task"
+    "finta/internal/tool"
+)
+
+type WBSTool struct {
+    registry *task.Registry
+}
+
+func NewWBSTool(registry *task.Registry) *WBSTool {
+    return &WBSTool{
+        registry: registry,
+    }
+}
+
+func (t *WBSTool) Name() string {
+    return "wbs"
+}
+
+func (t *WBSTool) Description() string {
+    return "Work Breakdown Structure (WBS) task management tool"
+}
+
+func (t *WBSTool) Parameters() map[string]any {
+    return map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "action": map[string]any{
+                "type": "string",
+                "enum": []string{"create", "update", "get", "list", "next", "add_dependency"},
+                "description": "Action to perform",
+            },
+            "task_id": map[string]any{
+                "type":        "string",
+                "description": "Task ID (for update/get/add_dependency)",
+            },
+            "title": map[string]any{
+                "type":        "string",
+                "description": "Task title (for create)",
+            },
+            "description": map[string]any{
+                "type":        "string",
+                "description": "Task description (for create)",
+            },
+            "status": map[string]any{
+                "type":        "string",
+                "enum":        []string{"pending", "in_progress", "blocked", "completed", "failed"},
+                "description": "Task status (for update)",
+            },
+            "priority": map[string]any{
+                "type":        "number",
+                "description": "Priority 1-5, 1=highest (for create)",
+            },
+            "parent_id": map[string]any{
+                "type":        "string",
+                "description": "Parent task ID (for create)",
+            },
+            "depends_on": map[string]any{
+                "type":        "string",
+                "description": "Dependency task ID (for add_dependency)",
+            },
+        },
+        "required": []string{"action"},
+    }
+}
+
+func (t *WBSTool) Execute(ctx context.Context, params json.RawMessage) (*tool.Result, error) {
+    var p struct {
+        Action      string `json:"action"`
+        TaskID      string `json:"task_id"`
+        Title       string `json:"title"`
+        Description string `json:"description"`
+        Status      string `json:"status"`
+        Priority    int    `json:"priority"`
+        ParentID    string `json:"parent_id"`
+        DependsOn   string `json:"depends_on"`
+    }
+
+    if err := json.Unmarshal(params, &p); err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("invalid parameters: %v", err),
+        }, nil
+    }
+
+    switch p.Action {
+    case "create":
+        return t.handleCreate(p)
+    case "update":
+        return t.handleUpdate(p)
+    case "get":
+        return t.handleGet(p.TaskID)
+    case "list":
+        return t.handleList(p.ParentID)
+    case "next":
+        return t.handleNext()
+    case "add_dependency":
+        return t.handleAddDependency(p.TaskID, p.DependsOn)
+    default:
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("unknown action: %s", p.Action),
+        }, nil
+    }
+}
+
+func (t *WBSTool) handleCreate(p struct {
+    Action      string `json:"action"`
+    TaskID      string `json:"task_id"`
+    Title       string `json:"title"`
+    Description string `json:"description"`
+    Status      string `json:"status"`
+    Priority    int    `json:"priority"`
+    ParentID    string `json:"parent_id"`
+    DependsOn   string `json:"depends_on"`
+}) (*tool.Result, error) {
+    if p.Title == "" {
+        return &tool.Result{
+            Success: false,
+            Error:   "title is required",
+        }, nil
+    }
+
+    newTask := task.NewTask(p.Title, p.Description)
+    if p.Priority > 0 && p.Priority <= 5 {
+        newTask.Priority = p.Priority
+    }
+    if p.ParentID != "" {
+        newTask.ParentID = p.ParentID
+    }
+
+    if err := t.registry.Create(newTask); err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("failed to create task: %v", err),
+        }, nil
+    }
+
+    return &tool.Result{
+        Success: true,
+        Output:  fmt.Sprintf("✓ Created task %s: %s (priority: %d)", newTask.ID, newTask.Title, newTask.Priority),
+        Data: map[string]any{
+            "task_id":  newTask.ID,
+            "title":    newTask.Title,
+            "priority": newTask.Priority,
+        },
+    }, nil
+}
+
+func (t *WBSTool) handleUpdate(p struct {
+    Action      string `json:"action"`
+    TaskID      string `json:"task_id"`
+    Title       string `json:"title"`
+    Description string `json:"description"`
+    Status      string `json:"status"`
+    Priority    int    `json:"priority"`
+    ParentID    string `json:"parent_id"`
+    DependsOn   string `json:"depends_on"`
+}) (*tool.Result, error) {
+    if p.TaskID == "" {
+        return &tool.Result{
+            Success: false,
+            Error:   "task_id is required",
+        }, nil
+    }
+
+    tsk, err := t.registry.Get(p.TaskID)
+    if err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("task not found: %v", err),
+        }, nil
+    }
+
+    // 更新状态
+    if p.Status != "" {
+        switch task.TaskStatus(p.Status) {
+        case task.StatusInProgress:
+            if err := tsk.Start(); err != nil {
+                return &tool.Result{Success: false, Error: err.Error()}, nil
+            }
+        case task.StatusCompleted:
+            if err := tsk.Complete(); err != nil {
+                return &tool.Result{Success: false, Error: err.Error()}, nil
+            }
+        case task.StatusFailed:
+            tsk.Fail("Manual update")
+        case task.StatusBlocked:
+            tsk.Block("Manual update")
+        default:
+            tsk.Status = task.TaskStatus(p.Status)
+        }
+    }
+
+    if err := t.registry.Update(tsk); err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("failed to update: %v", err),
+        }, nil
+    }
+
+    return &tool.Result{
+        Success: true,
+        Output:  fmt.Sprintf("✓ Updated task %s to status: %s", tsk.ID, tsk.Status),
+        Data: map[string]any{
+            "task_id": tsk.ID,
+            "status":  string(tsk.Status),
+        },
+    }, nil
+}
+
+func (t *WBSTool) handleGet(taskID string) (*tool.Result, error) {
+    if taskID == "" {
+        return &tool.Result{
+            Success: false,
+            Error:   "task_id is required",
+        }, nil
+    }
+
+    tsk, err := t.registry.Get(taskID)
+    if err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("task not found: %v", err),
+        }, nil
+    }
+
+    output := fmt.Sprintf(`Task %s:
+  Title: %s
+  Status: %s
+  Priority: %d
+  Description: %s
+  Dependencies: %v`,
+        tsk.ID, tsk.Title, tsk.Status, tsk.Priority, tsk.Description, tsk.Dependencies)
+
+    return &tool.Result{
+        Success: true,
+        Output:  output,
+        Data: map[string]any{
+            "task": tsk,
+        },
+    }, nil
+}
+
+func (t *WBSTool) handleList(parentID string) (*tool.Result, error) {
+    var tasks []*task.Task
+
+    if parentID != "" {
+        tasks = t.registry.GetByParent(parentID)
+    } else {
+        tasks = t.registry.GetRootTasks()
+    }
+
+    if len(tasks) == 0 {
+        return &tool.Result{
+            Success: true,
+            Output:  "No tasks found",
+        }, nil
+    }
+
+    var lines []string
+    for _, tsk := range tasks {
+        statusEmoji := getStatusEmoji(tsk.Status)
+        lines = append(lines, fmt.Sprintf("%s [P%d] %s - %s", statusEmoji, tsk.Priority, tsk.ID, tsk.Title))
+    }
+
+    completed, total := t.registry.GetProgress()
+    output := fmt.Sprintf("Tasks (%d/%d completed):\n%s", completed, total, strings.Join(lines, "\n"))
+
+    return &tool.Result{
+        Success: true,
+        Output:  output,
+        Data: map[string]any{
+            "tasks":     tasks,
+            "total":     total,
+            "completed": completed,
+        },
+    }, nil
+}
+
+func (t *WBSTool) handleNext() (*tool.Result, error) {
+    tasks := t.registry.GetNextTasks()
+
+    if len(tasks) == 0 {
+        return &tool.Result{
+            Success: true,
+            Output:  "No tasks ready to start",
+        }, nil
+    }
+
+    var lines []string
+    for _, tsk := range tasks {
+        lines = append(lines, fmt.Sprintf("[P%d] %s - %s", tsk.Priority, tsk.ID, tsk.Title))
+    }
+
+    output := fmt.Sprintf("Ready to start (%d tasks):\n%s", len(tasks), strings.Join(lines, "\n"))
+
+    return &tool.Result{
+        Success: true,
+        Output:  output,
+        Data: map[string]any{
+            "tasks": tasks,
+            "count": len(tasks),
+        },
+    }, nil
+}
+
+func (t *WBSTool) handleAddDependency(taskID, dependsOn string) (*tool.Result, error) {
+    if taskID == "" || dependsOn == "" {
+        return &tool.Result{
+            Success: false,
+            Error:   "task_id and depends_on are required",
+        }, nil
+    }
+
+    if err := t.registry.AddDependency(taskID, dependsOn); err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("failed to add dependency: %v", err),
+        }, nil
+    }
+
+    return &tool.Result{
+        Success: true,
+        Output:  fmt.Sprintf("✓ Added dependency: %s depends on %s", taskID, dependsOn),
+    }, nil
+}
+
+func getStatusEmoji(status task.TaskStatus) string {
+    switch status {
+    case task.StatusPending:
+        return "⏸️"
+    case task.StatusInProgress:
+        return "▶️"
+    case task.StatusCompleted:
+        return "✅"
+    case task.StatusFailed:
+        return "❌"
+    case task.StatusBlocked:
+        return "🚫"
+    default:
+        return "❓"
+    }
+}
+```
+
+#### 5.5.4 集成到 Plan Agent
+
+**文件**: `internal/agent/types.go`
+
+更新 Plan Agent 的系统提示词：
+
+```go
+func (f *DefaultFactory) createPlanAgent() (Agent, error) {
+    systemPrompt := `You are an expert software architect and planning agent.
+
+Your goal is to create detailed, actionable implementation plans using Work Breakdown Structure (WBS).
+
+When creating plans:
+1. **Break down tasks** into clear, manageable steps
+2. **Use the WBS tool** to create structured task hierarchies:
+   - wbs(action="create", title="...", description="...", priority=1-5)
+   - wbs(action="add_dependency", task_id="...", depends_on="...")
+3. **Identify dependencies** between tasks
+4. **Set priorities** (1=highest, 5=lowest)
+5. **Consider architectural trade-offs**
+
+Output structure:
+- **Overview**: High-level summary
+- **Task Breakdown**: Created via WBS tool
+- **Execution Order**: Based on dependencies
+- **Testing Strategy**: How to verify
+- **Potential Risks**: Issues to watch
+
+Always use the WBS tool to create the task structure.`
+
+    // ... rest of implementation
+}
+```
+
+### 使用示例
+
+```bash
+# Plan Agent 创建 WBS
+$ finta chat --agent-type plan "Plan implementation of user authentication"
+
+[Agent creates WBS structure]
+
+✓ Created task task-1234: Database schema (priority: 1)
+✓ Created task task-1235: API endpoints (priority: 2)
+✓ Created task task-1236: Frontend integration (priority: 3)
+✓ Added dependency: task-1235 depends on task-1234
+✓ Added dependency: task-1236 depends on task-1235
+
+**Plan Overview**:
+Authentication system with 3-tier architecture...
+
+[Task list shows]
+Tasks (0/3 completed):
+⏸️ [P1] task-1234 - Database schema
+⏸️ [P2] task-1235 - API endpoints
+⏸️ [P3] task-1236 - Frontend integration
+
+# Execute Agent 查询下一步
+$ finta chat --agent-type execute "What tasks are ready to start?"
+
+[Agent uses WBS tool]
+Ready to start (1 task):
+[P1] task-1234 - Database schema
+
+# Execute Agent 更新任务状态
+$ finta chat --agent-type execute "Start task-1234"
+
+✓ Updated task task-1234 to status: in_progress
+
+# 完成任务
+$ finta chat --agent-type execute "Mark task-1234 as completed"
+
+✓ Updated task task-1234 to status: completed
+
+# 查看进度
+$ finta chat "Show all tasks"
+
+Tasks (1/3 completed):
+✅ [P1] task-1234 - Database schema
+⏸️ [P2] task-1235 - API endpoints
+⏸️ [P3] task-1236 - Frontend integration
+```
+
+### 完成标准
+
+- ✅ Task 模型with 5 种状态（pending, in_progress, blocked, completed, failed）
+- ✅ Task Registry 支持 CRUD 和依赖管理
+- ✅ WBS Tool 实现 6 个操作（create, update, get, list, next, add_dependency）
+- ✅ 循环依赖检测功能
+- ✅ 状态转换验证（pending → in_progress → completed）
+- ✅ Plan Agent 使用 WBS 创建任务结构
+- ✅ Execute Agent 可以查询和更新任务状态
+- ✅ 进度追踪（X/Y completed）
+- ✅ 优先级排序
+
+### 后续优化方向
+
+1. **持久化**: 将 WBS 保存到数据库或文件
+2. **可视化**: 生成任务树状图（ASCII art 或 GraphViz）
+3. **时间估算**: 添加任务耗时估算和实际耗时记录
+4. **资源分配**: 支持多 Agent 并行执行任务
+5. **模板**: 预定义的任务模板（如"实现 REST API"）
 
 ---
 
@@ -2720,6 +5015,538 @@ func (s *Summarizer) Summarize(ctx context.Context, messages []llm.Message) (str
 - ✅ 会话可以保存和加载
 - ✅ 上下文摘要功能
 - ✅ CLI 支持恢复历史会话
+
+---
+
+## Phase 6.5: PMP 生命周期集成 (1-2 天)
+
+### 目标
+
+集成项目管理专业（PMP）的 5 个过程组概念，让 Agent 能够自主进行任务阶段识别和进度跟踪，但不强制要求严格的工作流。
+
+### 背景
+
+**PMP 5 个过程组（Process Groups）**：
+1. **Initiating (启动)**: 定义项目目标和可行性
+2. **Planning (规划)**: 制定详细计划和任务分解
+3. **Executing (执行)**: 实施计划中的任务
+4. **Monitoring & Controlling (监控)**: 跟踪进度，处理偏差
+5. **Closing (收尾)**: 验证完成，总结经验
+
+在 Finta 中的体现：
+- **概念性而非强制性**: 不是状态机，而是提示引导
+- **AI 自主决策**: Agent 根据任务上下文自行过渡阶段
+- **与 WBS 集成**: Lifecycle 阶段 + WBS 任务 = 完整项目管理
+- **可视化引导**: 为用户和 Agent 提供当前阶段信息
+
+### 实现步骤
+
+#### 6.5.1 Lifecycle 模型
+
+**文件**: `internal/lifecycle/lifecycle.go`
+
+```go
+package lifecycle
+
+import (
+    "fmt"
+    "time"
+)
+
+// Phase PMP 过程组阶段
+type Phase string
+
+const (
+    PhaseInitiate Phase = "initiate" // 🎯 启动：理解需求
+    PhasePlan     Phase = "plan"     // 📋 规划：任务分解
+    PhaseExecute  Phase = "execute"  // ⚙️ 执行：实施任务
+    PhaseMonitor  Phase = "monitor"  // 📊 监控：跟踪进度
+    PhaseClose    Phase = "close"    // ✅ 收尾：验证完成
+)
+
+// PhaseTransition 阶段转换记录
+type PhaseTransition struct {
+    FromPhase Phase     `json:"from_phase"`
+    ToPhase   Phase     `json:"to_phase"`
+    Timestamp time.Time `json:"timestamp"`
+    Trigger   string    `json:"trigger"` // 触发原因
+}
+
+// Lifecycle 生命周期管理
+type Lifecycle struct {
+    CurrentPhase Phase             `json:"current_phase"`
+    PhaseHistory []PhaseTransition `json:"phase_history"`
+    Metadata     map[string]any    `json:"metadata,omitempty"`
+    CreatedAt    time.Time         `json:"created_at"`
+    UpdatedAt    time.Time         `json:"updated_at"`
+}
+
+// NewLifecycle 创建新的生命周期（默认从 Initiate 开始）
+func NewLifecycle() *Lifecycle {
+    now := time.Now()
+    return &Lifecycle{
+        CurrentPhase: PhaseInitiate,
+        PhaseHistory: make([]PhaseTransition, 0),
+        Metadata:     make(map[string]any),
+        CreatedAt:    now,
+        UpdatedAt:    now,
+    }
+}
+
+// Transition 转换到新阶段
+func (lc *Lifecycle) Transition(toPhase Phase, trigger string) {
+    transition := PhaseTransition{
+        FromPhase: lc.CurrentPhase,
+        ToPhase:   toPhase,
+        Timestamp: time.Now(),
+        Trigger:   trigger,
+    }
+
+    lc.CurrentPhase = toPhase
+    lc.PhaseHistory = append(lc.PhaseHistory, transition)
+    lc.UpdatedAt = time.Now()
+}
+
+// GetPhaseEmoji 获取阶段对应的 Emoji
+func (lc *Lifecycle) GetPhaseEmoji() string {
+    switch lc.CurrentPhase {
+    case PhaseInitiate:
+        return "🎯"
+    case PhasePlan:
+        return "📋"
+    case PhaseExecute:
+        return "⚙️"
+    case PhaseMonitor:
+        return "📊"
+    case PhaseClose:
+        return "✅"
+    default:
+        return "❓"
+    }
+}
+
+// GetPhaseGuidance 获取当前阶段的引导信息
+func (lc *Lifecycle) GetPhaseGuidance() string {
+    switch lc.CurrentPhase {
+    case PhaseInitiate:
+        return `**Current Phase: Initiating** 🎯
+- Understand the requirements and objectives
+- Identify stakeholders and constraints
+- Assess feasibility
+- Define success criteria`
+
+    case PhasePlan:
+        return `**Current Phase: Planning** 📋
+- Break down work into tasks (use WBS tool)
+- Identify dependencies
+- Estimate effort and resources
+- Create detailed execution plan`
+
+    case PhaseExecute:
+        return `**Current Phase: Executing** ⚙️
+- Implement tasks according to plan
+- Query next tasks from WBS
+- Update task status as you progress
+- Document changes and decisions`
+
+    case PhaseMonitor:
+        return `**Current Phase: Monitoring** 📊
+- Check WBS progress (X/Y completed)
+- Identify blockers and resolve them
+- Adjust plan if needed
+- Communicate status`
+
+    case PhaseClose:
+        return `**Current Phase: Closing** ✅
+- Verify all tasks completed
+- Test and validate deliverables
+- Document lessons learned
+- Prepare final summary`
+
+    default:
+        return "Unknown phase"
+    }
+}
+
+// SuggestNextPhase 根据上下文建议下一个阶段（不强制）
+func (lc *Lifecycle) SuggestNextPhase(tasksCompleted, tasksTotal int) Phase {
+    switch lc.CurrentPhase {
+    case PhaseInitiate:
+        // 需求已理解 → 进入规划
+        return PhasePlan
+
+    case PhasePlan:
+        // 计划已制定（WBS 已创建）→ 进入执行
+        if tasksTotal > 0 {
+            return PhaseExecute
+        }
+        return PhasePlan
+
+    case PhaseExecute:
+        // 任务进行中 → 监控
+        if tasksCompleted > 0 && tasksCompleted < tasksTotal {
+            return PhaseMonitor
+        }
+        // 所有任务完成 → 收尾
+        if tasksCompleted == tasksTotal && tasksTotal > 0 {
+            return PhaseClose
+        }
+        return PhaseExecute
+
+    case PhaseMonitor:
+        // 持续监控，可回到执行
+        if tasksCompleted == tasksTotal && tasksTotal > 0 {
+            return PhaseClose
+        }
+        return PhaseExecute
+
+    case PhaseClose:
+        // 已收尾，保持不变
+        return PhaseClose
+
+    default:
+        return PhaseInitiate
+    }
+}
+```
+
+#### 6.5.2 集成到 Session
+
+**文件**: `internal/session/session.go`
+
+在现有 SessionData 结构中添加 Lifecycle 字段：
+
+```go
+package session
+
+import (
+    "time"
+
+    "finta/internal/lifecycle"
+    "finta/internal/llm"
+)
+
+type SessionData struct {
+    ID           string         `json:"id"`
+    Messages     []llm.Message  `json:"messages"`
+    StartTime    time.Time      `json:"start_time"`
+    UpdatedTime  time.Time      `json:"updated_time"`
+    Metadata     map[string]any `json:"metadata"`
+
+    // 🆕 新增：PMP 生命周期
+    Lifecycle    *lifecycle.Lifecycle `json:"lifecycle,omitempty"`
+}
+
+func NewSession(id string) *SessionData {
+    return &SessionData{
+        ID:          id,
+        Messages:    make([]llm.Message, 0),
+        StartTime:   time.Now(),
+        UpdatedTime: time.Now(),
+        Metadata:    make(map[string]any),
+        Lifecycle:   lifecycle.NewLifecycle(), // 🆕 初始化生命周期
+    }
+}
+```
+
+#### 6.5.3 集成到 Agent 提示词
+
+**文件**: `internal/agent/types.go`
+
+更新各 Agent 的 system prompt 包含生命周期信息：
+
+```go
+func (f *DefaultFactory) createGeneralAgent() (Agent, error) {
+    systemPrompt := `You are a helpful AI assistant with access to tools.
+You can read files, execute bash commands, write files, find files with glob
+patterns, and search files with grep.
+
+当前项目阶段信息（如果有）将在任务描述中提供。
+根据当前阶段，调整你的工作方式：
+- **启动阶段** (🎯): 重点理解需求，询问澄清问题
+- **规划阶段** (📋): 使用 WBS 工具创建任务结构
+- **执行阶段** (⚙️): 查询 WBS 获取下一个任务并执行
+- **监控阶段** (📊): 检查进度，处理阻塞任务
+- **收尾阶段** (✅): 验证完成，生成总结
+
+When solving tasks, follow the ReAct pattern:
+1. **Think**: Explain your reasoning before taking action
+2. **Act**: Use tools to gather information or make changes
+3. **Observe**: Analyze the results and plan next steps
+
+Always provide clear, concise responses.`
+
+    return NewBaseAgent(
+        "general",
+        systemPrompt,
+        f.llmClient,
+        f.toolRegistry,
+        &Config{
+            Model:              "gpt-4-turbo",
+            Temperature:        0.7,
+            MaxTokens:          4096,
+            MaxTurns:           20,
+            EnableParallelTools: true,
+            ToolExecutionMode:   tool.ExecutionModeMixed,
+        },
+    ), nil
+}
+```
+
+#### 6.5.4 Lifecycle Tool（可选）
+
+**文件**: `internal/tool/builtin/lifecycle.go`
+
+```go
+package builtin
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+
+    "finta/internal/lifecycle"
+    "finta/internal/tool"
+)
+
+type LifecycleTool struct {
+    lc *lifecycle.Lifecycle
+}
+
+func NewLifecycleTool(lc *lifecycle.Lifecycle) *LifecycleTool {
+    return &LifecycleTool{
+        lc: lc,
+    }
+}
+
+func (t *LifecycleTool) Name() string {
+    return "lifecycle"
+}
+
+func (t *LifecycleTool) Description() string {
+    return "Query or transition project lifecycle phase (PMP process groups)"
+}
+
+func (t *LifecycleTool) Parameters() map[string]any {
+    return map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "action": map[string]any{
+                "type": "string",
+                "enum": []string{"query", "transition"},
+                "description": "Action: query current phase or transition to new phase",
+            },
+            "to_phase": map[string]any{
+                "type": "string",
+                "enum": []string{"initiate", "plan", "execute", "monitor", "close"},
+                "description": "Target phase (for transition action)",
+            },
+            "trigger": map[string]any{
+                "type":        "string",
+                "description": "Reason for phase transition",
+            },
+        },
+        "required": []string{"action"},
+    }
+}
+
+func (t *LifecycleTool) Execute(ctx context.Context, params json.RawMessage) (*tool.Result, error) {
+    var p struct {
+        Action  string `json:"action"`
+        ToPhase string `json:"to_phase"`
+        Trigger string `json:"trigger"`
+    }
+
+    if err := json.Unmarshal(params, &p); err != nil {
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("invalid parameters: %v", err),
+        }, nil
+    }
+
+    switch p.Action {
+    case "query":
+        return t.handleQuery()
+    case "transition":
+        return t.handleTransition(p.ToPhase, p.Trigger)
+    default:
+        return &tool.Result{
+            Success: false,
+            Error:   fmt.Sprintf("unknown action: %s", p.Action),
+        }, nil
+    }
+}
+
+func (t *LifecycleTool) handleQuery() (*tool.Result, error) {
+    emoji := t.lc.GetPhaseEmoji()
+    guidance := t.lc.GetPhaseGuidance()
+
+    output := fmt.Sprintf("%s %s\n\n%s", emoji, t.lc.CurrentPhase, guidance)
+
+    return &tool.Result{
+        Success: true,
+        Output:  output,
+        Data: map[string]any{
+            "current_phase": string(t.lc.CurrentPhase),
+            "emoji":         emoji,
+        },
+    }, nil
+}
+
+func (t *LifecycleTool) handleTransition(toPhase, trigger string) (*tool.Result, error) {
+    if toPhase == "" {
+        return &tool.Result{
+            Success: false,
+            Error:   "to_phase is required",
+        }, nil
+    }
+
+    if trigger == "" {
+        trigger = "Manual transition"
+    }
+
+    phase := lifecycle.Phase(toPhase)
+    t.lc.Transition(phase, trigger)
+
+    emoji := t.lc.GetPhaseEmoji()
+    output := fmt.Sprintf("✓ Transitioned to %s %s\nReason: %s",
+        emoji, toPhase, trigger)
+
+    return &tool.Result{
+        Success: true,
+        Output:  output,
+        Data: map[string]any{
+            "phase": toPhase,
+        },
+    }, nil
+}
+```
+
+#### 6.5.5 CLI 显示生命周期信息
+
+**文件**: `cmd/finta/main.go`
+
+在 session 开始时显示当前阶段：
+
+```go
+func runChat(cmd *cobra.Command, args []string) error {
+    // ... 现有代码 ...
+
+    // 如果有 session，显示生命周期信息
+    if session != nil && session.Lifecycle != nil {
+        emoji := session.Lifecycle.GetPhaseEmoji()
+        log.Info("%s Current Phase: %s", emoji, session.Lifecycle.CurrentPhase)
+        log.Debug(session.Lifecycle.GetPhaseGuidance())
+    }
+
+    // ... 继续执行 ...
+}
+```
+
+### 使用示例
+
+```bash
+# 启动新会话（自动进入 Initiate 阶段）
+$ finta chat "Build a user authentication system"
+
+🎯 Current Phase: initiate
+
+[Agent asks clarifying questions about requirements]
+
+# Agent 自动过渡到 Plan 阶段
+$ finta chat --continue "Create a detailed plan"
+
+📋 Current Phase: plan
+
+[Agent uses WBS tool to create task structure]
+
+# Agent 过渡到 Execute 阶段
+$ finta chat --continue "Start implementing"
+
+⚙️ Current Phase: execute
+
+[Agent queries WBS for next task and begins implementation]
+
+# 手动查询当前阶段
+$ finta chat "What phase are we in?"
+
+📊 Current Phase: monitor
+
+**Current Phase: Monitoring**
+- Check WBS progress (2/5 completed)
+- Identify blockers and resolve them
+- Adjust plan if needed
+
+# 完成所有任务后，Agent 自动过渡到 Close
+$ finta chat "All tasks completed, verify and summarize"
+
+✅ Current Phase: close
+
+[Agent verifies completion and generates summary]
+```
+
+### 与其他组件的集成
+
+**完整流程示例**：
+
+```
+🎯 Initiate Phase
+  ↓
+  User: "Build authentication system"
+  Agent: Uses general reasoning, asks clarifying questions
+
+📋 Plan Phase
+  ↓
+  Agent: Creates WBS tasks
+  wbs(action="create", title="Database schema", priority=1)
+  wbs(action="create", title="API endpoints", priority=2)
+  wbs(action="add_dependency", ...)
+
+⚙️ Execute Phase
+  ↓
+  Agent: Queries WBS for next task
+  wbs(action="next") → [task-1234]
+  Executes task-1234
+  wbs(action="update", task_id="task-1234", status="completed")
+
+📊 Monitor Phase
+  ↓
+  Agent: Checks progress
+  wbs(action="list") → "Tasks (2/5 completed)"
+  Identifies blockers, adjusts plan
+
+✅ Close Phase
+  ↓
+  Agent: Verifies all tasks completed
+  wbs(action="list") → "Tasks (5/5 completed)"
+  Generates final summary and lessons learned
+```
+
+### 完成标准
+
+- ✅ Lifecycle 阶段模型（5 个 PMP 过程组）
+- ✅ Session 包含 lifecycle 字段
+- ✅ 阶段过渡历史记录
+- ✅ 每个阶段有对应的 Emoji 和引导信息
+- ✅ Agent 提示词包含阶段信息
+- ✅ 不强制工作流（AI 自主决策过渡）
+- ✅ Lifecycle Tool 提供查询和手动过渡功能
+- ✅ CLI 显示当前阶段
+
+### 关键设计原则
+
+1. **非强制性**: Lifecycle 是引导而非约束，Agent 可以自由决定何时过渡
+2. **集成性**: 与 WBS、Skills、ReAct 自然配合
+3. **可视化**: 清晰的阶段指示帮助用户理解进度
+4. **AI 驱动**: Agent 根据任务上下文自主识别阶段
+
+### 后续优化方向
+
+1. **自动过渡**: 基于 WBS 进度自动建议阶段过渡
+2. **阶段模板**: 每个阶段预定义的检查清单
+3. **历史分析**: 分析不同项目的阶段耗时模式
+4. **自定义阶段**: 允许用户定义自己的工作流阶段
+5. **阶段报告**: 自动生成每个阶段的总结报告
 
 ---
 

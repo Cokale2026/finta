@@ -260,3 +260,68 @@ func (l *Logger) formatJSON(jsonStr string) string {
 
 	return string(pretty)
 }
+
+// ReActCycle logs a complete ReAct (Reasoning-Action-Observation) cycle
+func (l *Logger) ReActCycle(thought, action, observation string, success bool, metadata map[string]any) {
+	if l.level > LevelDebug {
+		return
+	}
+
+	separator := strings.Repeat("═", 60)
+
+	if l.colorMode {
+		fmt.Fprintf(l.writer, "\n%s%s═══ ReAct Cycle ═══%s\n", ColorBold, ColorMagenta, ColorReset)
+		fmt.Fprintf(l.writer, "%s💭 Thought:%s %s\n", ColorYellow, ColorReset, thought)
+		fmt.Fprintf(l.writer, "%s⚡ Action:%s %s\n", ColorCyan, ColorReset, action)
+
+		obsColor := ColorGreen
+		emoji := "✅"
+		if !success {
+			obsColor = ColorRed
+			emoji = "❌"
+		}
+		fmt.Fprintf(l.writer, "%s%s Observation:%s %s\n", obsColor, emoji, ColorReset, observation)
+
+		if len(metadata) > 0 {
+			fmt.Fprintf(l.writer, "%s📊 Metadata:%s %v\n", ColorGray, ColorReset, metadata)
+		}
+		fmt.Fprintf(l.writer, "%s%s%s\n\n", ColorMagenta, separator, ColorReset)
+	} else {
+		fmt.Fprintf(l.writer, "\n=== ReAct Cycle ===\n")
+		fmt.Fprintf(l.writer, "Thought: %s\n", thought)
+		fmt.Fprintf(l.writer, "Action: %s\n", action)
+		fmt.Fprintf(l.writer, "Observation: %s\n", observation)
+		if len(metadata) > 0 {
+			fmt.Fprintf(l.writer, "Metadata: %v\n", metadata)
+		}
+		fmt.Fprintf(l.writer, "%s\n\n", separator)
+	}
+}
+
+// ReActThought logs the agent's thinking process (ReAct Thought component)
+func (l *Logger) ReActThought(content string) {
+	if l.level <= LevelAgent {
+		l.printSection(ColorYellow, "💭 Agent Thought", content)
+	}
+}
+
+// ReActAction logs the agent's action (ReAct Action component)
+func (l *Logger) ReActAction(action string) {
+	if l.level <= LevelTool {
+		l.printSection(ColorCyan, "⚡ Action", action)
+	}
+}
+
+// ReActObservation logs the observed result (ReAct Observation component)
+func (l *Logger) ReActObservation(observation string, success bool) {
+	color := ColorGreen
+	emoji := "✅"
+	if !success {
+		color = ColorRed
+		emoji = "❌"
+	}
+
+	if l.level <= LevelTool {
+		l.printSection(color, fmt.Sprintf("%s Observation", emoji), observation)
+	}
+}

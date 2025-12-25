@@ -14,12 +14,13 @@ type Agent interface {
 }
 
 type Input struct {
-	Messages       []llm.Message
-	Task           string
-	MaxTurns       int
-	Temperature    float32
-	Logger         *logger.Logger
+	Messages        []llm.Message
+	Task            string
+	MaxTurns        int
+	Temperature     float32
+	Logger          *logger.Logger
 	EnableStreaming bool
+	EnableReAct     bool // Enable ReAct (Reasoning-Action-Observation) pattern
 }
 
 type Output struct {

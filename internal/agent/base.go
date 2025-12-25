@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -52,6 +53,9 @@ func (a *BaseAgent) Name() string {
 func (a *BaseAgent) Run(ctx context.Context, input *Input) (*Output, error) {
 	// Create execution context
 	execCtx := NewExecutionContext(input.Logger)
+
+	// Enable ReAct mode if requested
+	execCtx.EnableReAct = input.EnableReAct
 
 	// Add logger to context for sub-agents
 	ctx = WithLogger(ctx, input.Logger)
@@ -111,8 +115,9 @@ func (a *BaseAgent) Run(ctx context.Context, input *Input) (*Output, error) {
 		// Add assistant message
 		messages = append(messages, resp.Message)
 
-		// Log agent reasoning if present
+		// Save reasoning for ReAct Thought and log it
 		if resp.Message.Reason != "" {
+			execCtx.LastReason = resp.Message.Reason
 			execCtx.LogReasoning(resp.Message.Reason)
 		}
 
@@ -196,13 +201,48 @@ func (a *BaseAgent) executeToolsWithLogging(
 		return nil, err
 	}
 
-	// Log all results
+	// Log all results and build ReActTrace if enabled
 	for _, result := range results {
 		duration := result.EndTime.Sub(result.StartTime)
 		execCtx.LogToolResult(result.ToolName, result.Result.Success, result.Result.Output, duration)
+
+		// Build ReActTrace if ReAct mode is enabled
+		if execCtx.EnableReAct && execCtx.LastReason != "" {
+			// Format action string
+			action := fmt.Sprintf("%s(%s)", result.ToolName, formatParams(result.Params))
+
+			// Build metadata
+			metadata := map[string]any{
+				"duration_ms": duration.Milliseconds(),
+				"success":     result.Result.Success,
+			}
+
+			// Create ReActTrace
+			result.ReActTrace = &llm.ReActTrace{
+				Thought:     execCtx.LastReason,
+				Action:      action,
+				Observation: result.Result.Output,
+				Metadata:    metadata,
+			}
+
+			// Log the complete ReAct cycle
+			execCtx.LogReActTrace(result.ReActTrace)
+		}
 	}
 
 	return results, nil
+}
+
+// formatParams formats JSON parameters for display
+func formatParams(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+	// For short params, keep compact; for long params, truncate
+	if len(params) < 80 {
+		return string(params)
+	}
+	return string(params[:77]) + "..."
 }
 
 // RunStreaming runs the agent with streaming output

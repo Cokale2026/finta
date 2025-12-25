@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"finta/internal/llm"
 	"finta/internal/logger"
 )
 
@@ -25,6 +26,10 @@ type ExecutionContext struct {
 	CurrentTurn   int
 	TotalTurns    int
 	ToolCallCount int
+
+	// ReAct pattern support
+	EnableReAct bool   // Whether ReAct mode is enabled
+	LastReason  string // Last LLM reasoning (used for Thought in ReAct cycle)
 }
 
 // NewExecutionContext creates a new execution context with the given logger
@@ -60,6 +65,14 @@ func (ctx *ExecutionContext) LogResponse(content string) {
 func (ctx *ExecutionContext) LogProgress() {
 	ctx.Logger.Progress(ctx.CurrentTurn, ctx.TotalTurns,
 		fmt.Sprintf("Turn %d/%d", ctx.CurrentTurn, ctx.TotalTurns))
+}
+
+// LogReActTrace logs a complete ReAct cycle (Thought-Action-Observation)
+func (ctx *ExecutionContext) LogReActTrace(trace *llm.ReActTrace) {
+	if ctx.EnableReAct && trace != nil {
+		ctx.Logger.ReActCycle(trace.Thought, trace.Action, trace.Observation,
+			trace.Metadata != nil && trace.Metadata["success"] == true, trace.Metadata)
+	}
 }
 
 // GetLoggerFromContext retrieves the logger stored in context
