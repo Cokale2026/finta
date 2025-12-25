@@ -127,6 +127,24 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	log.Debug("Created %s agent with max_turns=%d, temperature=%.2f, parallel=%v", agentType, maxTurns, temperature, parallel)
 
+	// Build input - only override defaults if flags were explicitly set
+	input := &agent.Input{
+		Task:   task,
+		Logger: log,
+	}
+
+	// Only override temperature if explicitly set by user
+	if cmd.Flags().Changed("temperature") {
+		input.Temperature = temperature
+		log.Debug("Overriding agent temperature with CLI value: %.2f", temperature)
+	}
+
+	// Only override max turns if explicitly set by user
+	if cmd.Flags().Changed("max-turns") {
+		input.MaxTurns = maxTurns
+		log.Debug("Overriding agent max turns with CLI value: %d", maxTurns)
+	}
+
 	// Run Agent (pass Logger to agent)
 	if streaming {
 		log.Info("Running in streaming mode")
@@ -139,24 +157,14 @@ func runChat(cmd *cobra.Command, args []string) error {
 			}
 		}()
 
-		_, err := ag.RunStreaming(context.Background(), &agent.Input{
-			Task:            task,
-			Temperature:     temperature,
-			Logger:          log,
-			EnableStreaming: true,
-			MaxTurns:        maxTurns,
-		}, streamChan)
+		input.EnableStreaming = true
+		_, err := ag.RunStreaming(context.Background(), input, streamChan)
 		if err != nil {
 			log.Error("Agent execution failed: %v", err)
 			return err
 		}
 	} else {
-		_, err := ag.Run(context.Background(), &agent.Input{
-			Task:        task,
-			Temperature: temperature,
-			Logger:      log,
-			MaxTurns:    maxTurns,
-		})
+		_, err := ag.Run(context.Background(), input)
 		if err != nil {
 			log.Error("Agent execution failed: %v", err)
 			return err

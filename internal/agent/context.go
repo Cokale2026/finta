@@ -1,10 +1,21 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"finta/internal/logger"
+)
+
+// ContextKey is a custom type for context keys to avoid collisions
+type ContextKey string
+
+const (
+	// LoggerContextKey is the context key for storing the logger
+	LoggerContextKey ContextKey = "logger"
+	// NestingDepthKey is the context key for tracking sub-agent nesting depth
+	NestingDepthKey ContextKey = "nesting_depth"
 )
 
 // ExecutionContext tracks the execution state of an agent and provides logging utilities
@@ -49,4 +60,30 @@ func (ctx *ExecutionContext) LogResponse(content string) {
 func (ctx *ExecutionContext) LogProgress() {
 	ctx.Logger.Progress(ctx.CurrentTurn, ctx.TotalTurns,
 		fmt.Sprintf("Turn %d/%d", ctx.CurrentTurn, ctx.TotalTurns))
+}
+
+// GetLoggerFromContext retrieves the logger stored in context
+func GetLoggerFromContext(ctx context.Context) *logger.Logger {
+	if log, ok := ctx.Value(LoggerContextKey).(*logger.Logger); ok {
+		return log
+	}
+	return nil
+}
+
+// WithLogger adds a logger to the context
+func WithLogger(ctx context.Context, log *logger.Logger) context.Context {
+	return context.WithValue(ctx, LoggerContextKey, log)
+}
+
+// GetNestingDepth retrieves the current nesting depth from context
+func GetNestingDepth(ctx context.Context) int {
+	if depth, ok := ctx.Value(NestingDepthKey).(int); ok {
+		return depth
+	}
+	return 0
+}
+
+// WithNestingDepth adds nesting depth to the context
+func WithNestingDepth(ctx context.Context, depth int) context.Context {
+	return context.WithValue(ctx, NestingDepthKey, depth)
 }

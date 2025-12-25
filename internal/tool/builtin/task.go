@@ -10,15 +10,14 @@ import (
 	"finta/internal/tool"
 )
 
-// nestingDepthKey is the context key for tracking nesting depth
-type contextKey string
-
-const nestingDepthKey contextKey = "nesting_depth"
-
 // MaxNestingDepth is the maximum allowed depth for sub-agent calls
 const MaxNestingDepth = 3
 
-// TaskTool launches specialized sub-agents
+// TaskTool launches specialized sub-agents for specific tasks.
+//
+// Note: While 'general' agent type is supported, spawning general agents
+// as sub-agents is discouraged as it may lead to overly complex nesting.
+// Prefer using specialized agents (explore, plan, execute) for focused tasks.
 type TaskTool struct {
 	factory agent.Factory
 }
@@ -44,8 +43,8 @@ func (t *TaskTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"agent_type": map[string]any{
 				"type":        "string",
-				"description": "Type of agent to spawn (explore, plan, execute)",
-				"enum":        []string{"explore", "plan", "execute"},
+				"description": "Type of agent to spawn (general, explore, plan, execute)",
+				"enum":        []string{"general", "explore", "plan", "execute"},
 			},
 			"task": map[string]any{
 				"type":        "string",
@@ -79,8 +78,28 @@ func (t *TaskTool) Execute(ctx context.Context, params json.RawMessage) (*tool.R
 		}, nil
 	}
 
+	// Validate required parameters
+	if len(p.Task) == 0 {
+		return &tool.Result{
+			Success: false,
+			Error:   "task parameter cannot be empty",
+		}, nil
+	}
+	if len(p.Description) == 0 {
+		return &tool.Result{
+			Success: false,
+			Error:   "description parameter cannot be empty",
+		}, nil
+	}
+	if len(p.AgentType) == 0 {
+		return &tool.Result{
+			Success: false,
+			Error:   "agent_type parameter cannot be empty",
+		}, nil
+	}
+
 	// Check nesting depth
-	depth := getNestingDepth(ctx)
+	depth := agent.GetNestingDepth(ctx)
 	if depth >= MaxNestingDepth {
 		return &tool.Result{
 			Success: false,
@@ -98,7 +117,7 @@ func (t *TaskTool) Execute(ctx context.Context, params json.RawMessage) (*tool.R
 	}
 
 	// Get parent logger from context
-	parentLogger := getLoggerFromContext(ctx)
+	parentLogger := agent.GetLoggerFromContext(ctx)
 	if parentLogger == nil {
 		// Fallback: create a basic logger
 		parentLogger = logger.NewLogger(nil, logger.LevelInfo)
@@ -108,7 +127,7 @@ func (t *TaskTool) Execute(ctx context.Context, params json.RawMessage) (*tool.R
 	parentLogger.Info("Launching %s sub-agent: %s", p.AgentType, p.Description)
 
 	// Create context with incremented depth
-	subCtx := context.WithValue(ctx, nestingDepthKey, depth+1)
+	subCtx := agent.WithNestingDepth(ctx, depth+1)
 
 	// Run sub-agent
 	output, err := subAgent.Run(subCtx, &agent.Input{
@@ -140,17 +159,4 @@ func (t *TaskTool) Execute(ctx context.Context, params json.RawMessage) (*tool.R
 			"turns":      len(output.Messages),
 		},
 	}, nil
-}
-
-// getNestingDepth retrieves the current nesting depth from context
-func getNestingDepth(ctx context.Context) int {
-	if depth, ok := ctx.Value(nestingDepthKey).(int); ok {
-		return depth
-	}
-	return 0
-}
-
-// getLoggerFromContext retrieves the logger from context using the agent's helper
-func getLoggerFromContext(ctx context.Context) *logger.Logger {
-	return agent.GetLoggerFromContext(ctx)
 }

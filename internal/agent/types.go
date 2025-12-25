@@ -40,20 +40,20 @@ func NewDefaultFactory(client llm.Client, registry *tool.Registry) *DefaultFacto
 func (f *DefaultFactory) CreateAgent(agentType AgentType) (Agent, error) {
 	switch agentType {
 	case AgentTypeGeneral:
-		return f.createGeneralAgent(), nil
+		return f.createGeneralAgent()
 	case AgentTypeExplore:
-		return f.createExploreAgent(), nil
+		return f.createExploreAgent()
 	case AgentTypePlan:
-		return f.createPlanAgent(), nil
+		return f.createPlanAgent()
 	case AgentTypeExecute:
-		return f.createExecuteAgent(), nil
+		return f.createExecuteAgent()
 	default:
 		return nil, fmt.Errorf("unknown agent type: %s", agentType)
 	}
 }
 
 // createGeneralAgent creates a general-purpose agent with access to all tools
-func (f *DefaultFactory) createGeneralAgent() Agent {
+func (f *DefaultFactory) createGeneralAgent() (Agent, error) {
 	systemPrompt := `You are a helpful AI assistant with access to tools.
 You can read files, execute bash commands, write files, find files with glob
 patterns, and search files with grep.
@@ -72,26 +72,24 @@ Always provide clear, concise responses.`
 			EnableParallelTools: true,
 			ToolExecutionMode:   tool.ExecutionModeMixed,
 		},
-	)
+	), nil
 }
 
 // createExploreAgent creates an exploration-focused agent with read-only tools
-func (f *DefaultFactory) createExploreAgent() Agent {
+func (f *DefaultFactory) createExploreAgent() (Agent, error) {
 	// Create filtered registry with read-only tools
 	exploreRegistry := tool.NewRegistry()
 
-	// Get tools from main registry
-	if readTool, err := f.toolRegistry.Get("read"); err == nil {
-		exploreRegistry.Register(readTool)
-	}
-	if globTool, err := f.toolRegistry.Get("glob"); err == nil {
-		exploreRegistry.Register(globTool)
-	}
-	if grepTool, err := f.toolRegistry.Get("grep"); err == nil {
-		exploreRegistry.Register(grepTool)
-	}
-	if bashTool, err := f.toolRegistry.Get("bash"); err == nil {
-		exploreRegistry.Register(bashTool)
+	// Get tools from main registry - must succeed for required tools
+	requiredTools := []string{"read", "glob", "grep", "bash"}
+	for _, name := range requiredTools {
+		t, err := f.toolRegistry.Get(name)
+		if err != nil {
+			return nil, fmt.Errorf("explore agent requires tool '%s' but it's not registered: %w", name, err)
+		}
+		if err := exploreRegistry.Register(t); err != nil {
+			return nil, fmt.Errorf("failed to register tool '%s' for explore agent: %w", name, err)
+		}
 	}
 
 	systemPrompt := `You are an expert codebase exploration agent.
@@ -124,19 +122,24 @@ Always provide clear summaries of your findings.`
 			EnableParallelTools: true,
 			ToolExecutionMode:   tool.ExecutionModeMixed,
 		},
-	)
+	), nil
 }
 
 // createPlanAgent creates a planning-focused agent with limited tools
-func (f *DefaultFactory) createPlanAgent() Agent {
+func (f *DefaultFactory) createPlanAgent() (Agent, error) {
 	// Create filtered registry with read and glob only
 	planRegistry := tool.NewRegistry()
 
-	if readTool, err := f.toolRegistry.Get("read"); err == nil {
-		planRegistry.Register(readTool)
-	}
-	if globTool, err := f.toolRegistry.Get("glob"); err == nil {
-		planRegistry.Register(globTool)
+	// Get tools from main registry - must succeed for required tools
+	requiredTools := []string{"read", "glob"}
+	for _, name := range requiredTools {
+		t, err := f.toolRegistry.Get(name)
+		if err != nil {
+			return nil, fmt.Errorf("plan agent requires tool '%s' but it's not registered: %w", name, err)
+		}
+		if err := planRegistry.Register(t); err != nil {
+			return nil, fmt.Errorf("failed to register tool '%s' for plan agent: %w", name, err)
+		}
 	}
 
 	systemPrompt := `You are an expert software architect and planning agent.
@@ -173,11 +176,11 @@ Be thorough and consider edge cases.`
 			EnableParallelTools: true,
 			ToolExecutionMode:   tool.ExecutionModeMixed,
 		},
-	)
+	), nil
 }
 
 // createExecuteAgent creates an execution-focused agent with all tools
-func (f *DefaultFactory) createExecuteAgent() Agent {
+func (f *DefaultFactory) createExecuteAgent() (Agent, error) {
 	systemPrompt := `You are an expert implementation agent focused on careful,
 precise code execution.
 
@@ -212,5 +215,5 @@ Focus on correctness and safety over speed.`
 			EnableParallelTools: true,
 			ToolExecutionMode:   tool.ExecutionModeMixed,
 		},
-	)
+	), nil
 }
