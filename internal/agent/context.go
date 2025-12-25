@@ -35,6 +35,11 @@ func (ctx *ExecutionContext) LogToolResult(toolName string, success bool, output
 	ctx.Logger.ToolResult(toolName, success, output, duration)
 }
 
+// LogReasoning logs the agent's reasoning/thinking process
+func (ctx *ExecutionContext) LogReasoning(content string) {
+	ctx.Logger.AgentReasoning(content)
+}
+
 // LogResponse logs the agent's response
 func (ctx *ExecutionContext) LogResponse(content string) {
 	ctx.Logger.AgentResponse(content)

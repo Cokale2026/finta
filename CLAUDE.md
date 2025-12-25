@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Finta is an AI Agent framework inspired by ClaudeCode's design philosophy. It provides a modular, extensible foundation for building AI agents that can execute tools, interact with LLMs, and handle complex multi-turn conversations.
 
-**Current Status**: Phase 2 complete (parallel tool execution & streaming support)
+**Current Status**: Phase 2 complete (parallel tool execution & streaming support) + Reasoning support
 **Go Version**: 1.24.5
-**Primary LLM Integration**: OpenAI API
+**Primary LLM Integration**: OpenAI API (with Extended Thinking / Reasoning)
 
 ## Build and Development Commands
 
@@ -53,6 +53,17 @@ The framework follows a strict interface-based architecture where all major comp
 - Easy testing via mocks
 - Multiple implementations (e.g., different LLM providers)
 - Clear separation of concerns
+
+### Reasoning Support (Extended Thinking)
+
+**NEW**: The framework now supports LLM reasoning/thinking process:
+- **Message.Reason**: Stores the LLM's internal reasoning
+- **Message.Content**: Stores the final answer
+- **Complete History**: Reasoning is preserved and sent back to LLM in subsequent turns
+- **Visual Separation**: Reasoning (💭 yellow) vs Response (💬 green)
+- **Streaming**: Reasoning is streamed in real-time
+
+See `REASONING_SUPPORT.md` for detailed documentation.
 
 ### Critical Data Flow: Agent Run Loop
 

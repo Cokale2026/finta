@@ -90,6 +90,13 @@ func (l *Logger) AgentResponse(content string) {
 	}
 }
 
+// AgentReasoning logs the agent's reasoning/thinking process
+func (l *Logger) AgentReasoning(content string) {
+	if l.level <= LevelAgent {
+		l.printSection(ColorYellow, "💭 Agent Reasoning", content)
+	}
+}
+
 // ToolCall logs a tool call with its parameters
 func (l *Logger) ToolCall(toolName string, params string) {
 	if l.level <= LevelTool {

@@ -108,6 +108,11 @@ func (a *BaseAgent) Run(ctx context.Context, input *Input) (*Output, error) {
 		// Add assistant message
 		messages = append(messages, resp.Message)
 
+		// Log agent reasoning if present
+		if resp.Message.Reason != "" {
+			execCtx.LogReasoning(resp.Message.Reason)
+		}
+
 		// Log agent response if present
 		if resp.Message.Content != "" {
 			execCtx.LogResponse(resp.Message.Content)
@@ -257,6 +262,7 @@ func (a *BaseAgent) RunStreaming(ctx context.Context, input *Input, streamChan c
 		// Stream content and accumulate message
 		accumulatedMsg := llm.Message{
 			Role:      llm.RoleAssistant,
+			Reason:    "",
 			Content:   "",
 			ToolCalls: nil,
 		}
@@ -271,6 +277,17 @@ func (a *BaseAgent) RunStreaming(ctx context.Context, input *Input, streamChan c
 
 			if delta.Done {
 				break
+			}
+
+			// Accumulate and send reasoning to stream channel
+			if delta.Reason != "" {
+				accumulatedMsg.Reason += delta.Reason
+				select {
+				case streamChan <- delta.Reason:
+				case <-ctx.Done():
+					reader.Close()
+					return nil, ctx.Err()
+				}
 			}
 
 			// Send content to stream channel
@@ -294,6 +311,11 @@ func (a *BaseAgent) RunStreaming(ctx context.Context, input *Input, streamChan c
 
 		// Add assistant message
 		messages = append(messages, accumulatedMsg)
+
+		// Log reasoning if present
+		if accumulatedMsg.Reason != "" {
+			execCtx.LogReasoning(accumulatedMsg.Reason)
+		}
 
 		// Check if done
 		if len(accumulatedMsg.ToolCalls) == 0 {
