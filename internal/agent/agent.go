@@ -10,14 +10,16 @@ import (
 type Agent interface {
 	Name() string
 	Run(ctx context.Context, input *Input) (*Output, error)
+	RunStreaming(ctx context.Context, input *Input, streamChan chan<- string) (*Output, error)
 }
 
 type Input struct {
-	Messages    []llm.Message
-	Task        string
-	MaxTurns    int
-	Temperature float32
-	Logger      *logger.Logger
+	Messages       []llm.Message
+	Task           string
+	MaxTurns       int
+	Temperature    float32
+	Logger         *logger.Logger
+	EnableStreaming bool
 }
 
 type Output struct {
@@ -27,8 +29,10 @@ type Output struct {
 }
 
 type Config struct {
-	Model       string
-	Temperature float32
-	MaxTokens   int
-	MaxTurns    int
+	Model              string
+	Temperature        float32
+	MaxTokens          int
+	MaxTurns           int
+	EnableParallelTools bool
+	ToolExecutionMode   tool.ExecutionMode
 }

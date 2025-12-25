@@ -57,11 +57,6 @@ func (c *Client) Chat(ctx context.Context, req *llm.ChatRequest) (*llm.ChatRespo
 	return c.convertResponse(resp), nil
 }
 
-func (c *Client) ChatStream(ctx context.Context, req *llm.ChatRequest) (llm.StreamReader, error) {
-	// Streaming implementation will be added in Phase 2
-	return nil, nil
-}
-
 func (c *Client) Provider() string {
 	return "openai"
 }
@@ -76,8 +71,8 @@ func (c *Client) convertMessages(msgs []llm.Message) []openai.ChatCompletionMess
 	for i, msg := range msgs {
 		ocMsg := openai.ChatCompletionMessage{
 			Role:             string(msg.Role),
-			Content:          msg.Content,
 			ReasoningContent: msg.Reason,
+			Content:          msg.Content,
 		}
 
 		// Convert tool calls
@@ -99,7 +94,6 @@ func (c *Client) convertMessages(msgs []llm.Message) []openai.ChatCompletionMess
 		if msg.Role == llm.RoleTool {
 			ocMsg.ToolCallID = msg.ToolCallID
 		}
-
 		result[i] = ocMsg
 	}
 	return result

@@ -22,6 +22,8 @@ var (
 	maxTurns    int
 	verbose     bool
 	noColor     bool
+	streaming   bool
+	parallel    bool
 )
 
 func main() {
@@ -45,6 +47,8 @@ func main() {
 	chatCmd.Flags().IntVar(&maxTurns, "max-turns", 10, "Maximum conversation turns")
 	chatCmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose output (debug mode)")
 	chatCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable colored output")
+	chatCmd.Flags().BoolVar(&streaming, "streaming", false, "Enable streaming output")
+	chatCmd.Flags().BoolVar(&parallel, "parallel", true, "Enable parallel tool execution (default: true)")
 
 	rootCmd.AddCommand(chatCmd)
 
@@ -80,31 +84,65 @@ func runChat(cmd *cobra.Command, args []string) error {
 	registry := tool.NewRegistry()
 	registry.Register(builtin.NewReadTool())
 	registry.Register(builtin.NewBashTool())
+	registry.Register(builtin.NewWriteTool())
+	registry.Register(builtin.NewGlobTool())
+	registry.Register(builtin.NewGrepTool())
 
-	log.Info("Registered %d tools: read, bash", 2)
+	log.Info("Registered %d tools: read, bash, write, glob, grep", 5)
 
 	// Create Agent
 	systemPrompt := `You are a helpful AI assistant with access to tools.
-You can read files and execute bash commands.
+You can read files, execute bash commands, write files, find files with glob patterns, and search files with grep.
 Always provide clear, concise responses.`
 
-	log.Debug("Agent created with max_turns=%d, temperature=%.2f", maxTurns, temperature)
+	// Determine tool execution mode
+	executionMode := tool.ExecutionModeMixed
+	if !parallel {
+		executionMode = tool.ExecutionModeSequential
+	}
+
+	log.Debug("Agent created with max_turns=%d, temperature=%.2f, parallel=%v", maxTurns, temperature, parallel)
 
 	ag := agent.NewBaseAgent("general", systemPrompt, llmClient, registry, &agent.Config{
-		Model:       model,
-		Temperature: temperature,
-		MaxTurns:    maxTurns,
+		Model:              model,
+		Temperature:        temperature,
+		MaxTurns:           maxTurns,
+		EnableParallelTools: parallel,
+		ToolExecutionMode:   executionMode,
 	})
 
 	// Run Agent (pass Logger to agent)
-	_, err := ag.Run(context.Background(), &agent.Input{
-		Task:        task,
-		Temperature: temperature,
-		Logger:      log,
-	})
-	if err != nil {
-		log.Error("Agent execution failed: %v", err)
-		return err
+	if streaming {
+		log.Info("Running in streaming mode")
+		streamChan := make(chan string, 100)
+
+		// Start goroutine to print streamed content
+		go func() {
+			for content := range streamChan {
+				fmt.Print(content)
+			}
+		}()
+
+		_, err := ag.RunStreaming(context.Background(), &agent.Input{
+			Task:           task,
+			Temperature:    temperature,
+			Logger:         log,
+			EnableStreaming: true,
+		}, streamChan)
+		if err != nil {
+			log.Error("Agent execution failed: %v", err)
+			return err
+		}
+	} else {
+		_, err := ag.Run(context.Background(), &agent.Input{
+			Task:        task,
+			Temperature: temperature,
+			Logger:      log,
+		})
+		if err != nil {
+			log.Error("Agent execution failed: %v", err)
+			return err
+		}
 	}
 
 	log.Debug("Agent completed successfully")

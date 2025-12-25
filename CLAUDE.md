@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Finta is an AI Agent framework inspired by ClaudeCode's design philosophy. It provides a modular, extensible foundation for building AI agents that can execute tools, interact with LLMs, and handle complex multi-turn conversations.
 
-**Current Status**: Phase 1 complete (core foundation with logging system)
+**Current Status**: Phase 2 complete (parallel tool execution & streaming support)
 **Go Version**: 1.24.5
 **Primary LLM Integration**: OpenAI API
 
@@ -42,6 +42,8 @@ export OPENAI_API_KEY="your-key"
 - `--max-turns` - Max conversation turns (default: 10)
 - `--verbose` - Enable debug logging
 - `--no-color` - Disable colored output
+- `--streaming` - Enable streaming output (default: false)
+- `--parallel` - Enable parallel tool execution (default: true)
 
 ## Architecture
 

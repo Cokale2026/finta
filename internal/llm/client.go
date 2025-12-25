@@ -40,6 +40,7 @@ type StreamReader interface {
 
 type Delta struct {
 	Role      Role
+	Reason    string
 	Content   string
 	ToolCalls []*ToolCall
 	Done      bool
