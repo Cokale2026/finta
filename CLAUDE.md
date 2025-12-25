@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Finta is an AI Agent framework inspired by ClaudeCode's design philosophy. It provides a modular, extensible foundation for building AI agents that can execute tools, interact with LLMs, and handle complex multi-turn conversations.
 
-**Current Status**: Phase 2 complete (parallel tool execution & streaming support) + Reasoning support
+**Current Status**: Phase 3 complete (specialized agents: General, Explore, Plan, Execute) + Reasoning support
 **Go Version**: 1.24.5
 **Primary LLM Integration**: OpenAI API (with Extended Thinking / Reasoning)
 
@@ -32,12 +32,18 @@ export OPENAI_API_KEY="your-key"
 
 # Disable colored output (for logs)
 ./finta chat --no-color "task" > log.txt
+
+# Use specialized agent
+./finta chat --agent-type explore "Find all Go files in internal/"
+./finta chat --agent-type plan "Plan how to add a new tool"
+./finta chat --agent-type execute "Create test file"
 ```
 
 ### Available CLI Flags
 - `--api-key` - OpenAI API key (or env: OPENAI_API_KEY)
 - `--api-base-url` - Custom API endpoint (or env: OPENAI_API_BASE_URL)
 - `--model` - Model to use (default: gpt-4-turbo)
+- `--agent-type` - Agent type (general, explore, plan, execute; default: general)
 - `--temperature` - Temperature parameter (default: 0.7)
 - `--max-turns` - Max conversation turns (default: 10)
 - `--verbose` - Enable debug logging
@@ -64,6 +70,47 @@ The framework follows a strict interface-based architecture where all major comp
 - **Streaming**: Reasoning is streamed in real-time
 
 See `REASONING_SUPPORT.md` for detailed documentation.
+
+### Specialized Agents & Factory Pattern (Phase 3)
+
+**NEW**: The framework supports specialized agent types with different capabilities:
+
+```
+Factory Pattern:
+  DefaultFactory.CreateAgent(agentType) → {Explore, Plan, Execute, General}Agent
+
+Agent Types:
+  • General  - All tools, temp=0.7, turns=20 (default)
+  • Explore  - Read-only tools, temp=0.3, turns=15
+  • Plan     - Read+glob only, temp=0.5, turns=10
+  • Execute  - All tools, temp=0.5, turns=20
+
+Task Tool:
+  Parent Agent → Task("explore", "task") → Explore Sub-Agent
+                                          ↓
+                                    Shared Logger
+                                    Depth tracking (max 3 levels)
+                                    Result formatting
+```
+
+**Key Features**:
+- **Factory Pattern**: `DefaultFactory` in `internal/agent/types.go` creates specialized agents
+- **Task Tool**: Enables hierarchical agent composition (parent spawns sub-agents)
+- **Nesting Control**: Maximum 3-level depth prevents infinite recursion
+- **Logger Propagation**: Sub-agents share parent's logger via context
+- **Tool Filtering**: Each agent type has access to specific tool subsets
+
+**Usage**:
+```bash
+# Direct usage
+./finta chat --agent-type explore "Find all Go files"
+./finta chat --agent-type plan "Plan how to add X feature"
+
+# From within agent (Task tool)
+task(agent_type="explore", task="Explore codebase", description="Code exploration")
+```
+
+See `PHASE3_SUMMARY.md` for detailed documentation.
 
 ### Critical Data Flow: Agent Run Loop
 

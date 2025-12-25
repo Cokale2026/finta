@@ -6,8 +6,14 @@ import (
 	"time"
 
 	"finta/internal/llm"
+	"finta/internal/logger"
 	"finta/internal/tool"
 )
+
+// contextKey is a custom type for context keys to avoid collisions
+type contextKey string
+
+const loggerContextKey contextKey = "logger"
 
 type BaseAgent struct {
 	name         string
@@ -52,6 +58,9 @@ func (a *BaseAgent) Name() string {
 func (a *BaseAgent) Run(ctx context.Context, input *Input) (*Output, error) {
 	// Create execution context
 	execCtx := NewExecutionContext(input.Logger)
+
+	// Add logger to context for sub-agents
+	ctx = context.WithValue(ctx, loggerContextKey, input.Logger)
 
 	// Log session start
 	execCtx.Logger.SessionStart(input.Task)
@@ -207,6 +216,9 @@ func (a *BaseAgent) RunStreaming(ctx context.Context, input *Input, streamChan c
 	// Create execution context
 	execCtx := NewExecutionContext(input.Logger)
 
+	// Add logger to context for sub-agents
+	ctx = context.WithValue(ctx, loggerContextKey, input.Logger)
+
 	// Log session start
 	execCtx.Logger.SessionStart(input.Task)
 
@@ -357,3 +369,12 @@ func (a *BaseAgent) RunStreaming(ctx context.Context, input *Input, streamChan c
 	execCtx.Logger.Error("Max turns exceeded")
 	return nil, fmt.Errorf("max turns (%d) exceeded", maxTurns)
 }
+
+// GetLoggerFromContext retrieves the logger stored in context
+func GetLoggerFromContext(ctx context.Context) *logger.Logger {
+	if log, ok := ctx.Value(loggerContextKey).(*logger.Logger); ok {
+		return log
+	}
+	return nil
+}
+

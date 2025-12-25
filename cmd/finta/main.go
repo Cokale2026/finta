@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"finta/internal/agent"
 	"finta/internal/llm/openai"
@@ -24,6 +25,7 @@ var (
 	noColor     bool
 	streaming   bool
 	parallel    bool
+	agentType   string
 )
 
 func main() {
@@ -49,6 +51,7 @@ func main() {
 	chatCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	chatCmd.Flags().BoolVar(&streaming, "streaming", false, "Enable streaming output")
 	chatCmd.Flags().BoolVar(&parallel, "parallel", true, "Enable parallel tool execution (default: true)")
+	chatCmd.Flags().StringVar(&agentType, "agent-type", "general", "Agent type to use (general, explore, plan, execute)")
 
 	rootCmd.AddCommand(chatCmd)
 
@@ -75,6 +78,22 @@ func runChat(cmd *cobra.Command, args []string) error {
 		log.SetColorMode(false)
 	}
 
+	// Print configuration with masked sensitive data
+	log.Info("Configuration:")
+	log.Info("  Task: %s", task)
+	log.Info("  Model: %s", model)
+	log.Info("  Agent Type: %s", agentType)
+	log.Info("  Temperature: %.2f", temperature)
+	log.Info("  Max Turns: %d", maxTurns)
+	log.Info("  Parallel: %v", parallel)
+	log.Info("  Streaming: %v", streaming)
+	log.Info("  Verbose: %v", verbose)
+	log.Info("  API Key: %s", maskAPIKey(apiKey))
+	if apiBaseURL != "" {
+		log.Info("  API Base URL: %s", apiBaseURL)
+	}
+	log.Info("")
+
 	// Create LLM client
 	log.Debug("Creating LLM client (model: %s)", model)
 	llmClient := openai.NewClient(apiKey, model, apiBaseURL)
@@ -88,28 +107,25 @@ func runChat(cmd *cobra.Command, args []string) error {
 	registry.Register(builtin.NewGlobTool())
 	registry.Register(builtin.NewGrepTool())
 
-	log.Info("Registered %d tools: read, bash, write, glob, grep", 5)
+	// Create agent factory
+	factory := agent.NewDefaultFactory(llmClient, registry)
 
-	// Create Agent
-	systemPrompt := `You are a helpful AI assistant with access to tools.
-You can read files, execute bash commands, write files, find files with glob patterns, and search files with grep.
-Always provide clear, concise responses.`
+	// Register Task tool with factory
+	taskTool := builtin.NewTaskTool(factory)
+	registry.Register(taskTool)
 
-	// Determine tool execution mode
-	executionMode := tool.ExecutionModeMixed
-	if !parallel {
-		executionMode = tool.ExecutionModeSequential
+	log.Info("Registered %d tools: read, bash, write, glob, grep, task", 6)
+
+	// Create agent based on type
+	var ag agent.Agent
+	var err error
+	ag, err = factory.CreateAgent(agent.AgentType(agentType))
+	if err != nil {
+		log.Error("Failed to create agent: %v", err)
+		return err
 	}
 
-	log.Debug("Agent created with max_turns=%d, temperature=%.2f, parallel=%v", maxTurns, temperature, parallel)
-
-	ag := agent.NewBaseAgent("general", systemPrompt, llmClient, registry, &agent.Config{
-		Model:              model,
-		Temperature:        temperature,
-		MaxTurns:           maxTurns,
-		EnableParallelTools: parallel,
-		ToolExecutionMode:   executionMode,
-	})
+	log.Debug("Created %s agent with max_turns=%d, temperature=%.2f, parallel=%v", agentType, maxTurns, temperature, parallel)
 
 	// Run Agent (pass Logger to agent)
 	if streaming {
@@ -124,10 +140,11 @@ Always provide clear, concise responses.`
 		}()
 
 		_, err := ag.RunStreaming(context.Background(), &agent.Input{
-			Task:           task,
-			Temperature:    temperature,
-			Logger:         log,
+			Task:            task,
+			Temperature:     temperature,
+			Logger:          log,
 			EnableStreaming: true,
+			MaxTurns:        maxTurns,
 		}, streamChan)
 		if err != nil {
 			log.Error("Agent execution failed: %v", err)
@@ -138,6 +155,7 @@ Always provide clear, concise responses.`
 			Task:        task,
 			Temperature: temperature,
 			Logger:      log,
+			MaxTurns:    maxTurns,
 		})
 		if err != nil {
 			log.Error("Agent execution failed: %v", err)
@@ -148,4 +166,12 @@ Always provide clear, concise responses.`
 	log.Debug("Agent completed successfully")
 
 	return nil
+}
+
+// maskAPIKey masks the API key for logging, showing only first 8 and last 4 characters
+func maskAPIKey(key string) string {
+	if len(key) <= 12 {
+		return "***" // Too short to safely show any part
+	}
+	return key[:8] + strings.Repeat("*", len(key)-12) + key[len(key)-4:]
 }
