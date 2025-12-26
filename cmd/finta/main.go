@@ -108,6 +108,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	registry.Register(builtin.NewWriteTool())
 	registry.Register(builtin.NewGlobTool())
 	registry.Register(builtin.NewGrepTool())
+	registry.Register(builtin.NewTodoWriteTool())
 
 	// Create agent factory
 	factory := agent.NewDefaultFactory(llmClient, registry)
@@ -116,7 +117,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	taskTool := builtin.NewTaskTool(factory)
 	registry.Register(taskTool)
 
-	log.Info("Registered %d tools: read, bash, write, glob, grep, task", 6)
+	log.Info("Registered %d tools: read, bash, write, glob, grep, TodoWrite, task", 7)
 
 	// Create agent based on type
 	var ag agent.Agent
