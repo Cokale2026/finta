@@ -24,6 +24,10 @@ func (t *WriteTool) Description() string {
 	return "Write content to a file (creates or overwrites)"
 }
 
+func (t *WriteTool) BestPractices() string {
+	return ""
+}
+
 func (t *WriteTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

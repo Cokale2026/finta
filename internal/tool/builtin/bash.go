@@ -24,6 +24,10 @@ func (t *BashTool) Description() string {
 	return "Execute a bash command"
 }
 
+func (t *BashTool) BestPractices() string {
+	return ""
+}
+
 func (t *BashTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

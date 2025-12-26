@@ -70,3 +70,31 @@ func (r *Registry) GetToolDefinitions() []*llm.ToolDefinition {
 
 	return defs
 }
+
+// GetToolBestPractices collects best practices from all registered tools
+// that implement the ToolWithBestPractices interface
+func (r *Registry) GetToolBestPractices() string {
+	tools := r.List()
+	var practices []string
+
+	for _, t := range tools {
+		if bp := t.BestPractices(); bp != "" {
+			practices = append(practices, bp)
+		}
+	}
+
+	if len(practices) == 0 {
+		return ""
+	}
+
+	// Join all practices with double newline separator
+	result := "# Tool Usage Best Practices\n\n"
+	for i, practice := range practices {
+		result += practice
+		if i < len(practices)-1 {
+			result += "\n\n"
+		}
+	}
+
+	return result
+}

@@ -132,12 +132,41 @@ Tools are registered in a thread-safe `Registry` (`internal/tool/registry.go`):
 - **Registration**: Tools must implement `Tool` interface (Name, Description, Parameters, Execute)
 - **Execution**: BaseAgent fetches tools from registry and executes them with JSON parameters
 - **LLM Integration**: Registry converts tools to `ToolDefinition` format for OpenAI API
+- **Best Practices** (Optional): Tools can implement `ToolWithBestPractices` to provide usage guidelines
 
 Tool execution flow in `base.go`:
 1. LLM returns tool calls with function name + JSON arguments
 2. Agent looks up tool in registry
 3. Tool executes with context + parameters
 4. Result (with timing) is logged and added to conversation
+
+#### Tool Best Practices System
+
+**NEW**: Tools can optionally provide best practices that are automatically included in agent system prompts.
+
+**How it works**:
+1. Tools implement `ToolWithBestPractices` interface with a `BestPractices()` method
+2. When creating agents, the factory calls `registry.GetToolBestPractices()`
+3. Best practices are appended to the agent's system prompt
+4. LLM learns optimal tool usage patterns
+
+**Benefits**:
+- Self-contained: Tools define their own usage guidelines
+- Automatic: Best practices update whenever tools update
+- Configurable: Can be enabled/disabled per factory with `SetIncludeBestPractices()`
+- Educational: Improves LLM tool usage without prompt engineering
+
+**Example**:
+```go
+func (t *ReadTool) BestPractices() string {
+    return `**Read Tool Best Practices**:
+1. Use line ranges for large files
+2. Read multiple related files together
+3. Read files before modifying them`
+}
+```
+
+See `docs/TOOL_BEST_PRACTICES.md` for complete documentation.
 
 ### Built-in Tools
 

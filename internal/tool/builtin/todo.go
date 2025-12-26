@@ -73,6 +73,34 @@ func (t *TodoWriteTool) Name() string {
 	return "TodoWrite"
 }
 
+func (t *TodoWriteTool) BestPractices() string {
+	return `**TodoWrite Tool Best Practices**:
+
+1. **Create todos for complex tasks (3+ steps)** - Use TodoWrite for multi-step workflows
+   - Good: "Implement authentication" → Create 5-6 specific todos
+   - Skip: Single simple tasks like "read config.yaml"
+
+2. **Keep EXACTLY ONE task in_progress** - Only mark one task as in_progress at any time
+   - Before starting new task: Mark current task as completed
+   - Never have multiple tasks in_progress simultaneously
+
+3. **Mark completed IMMEDIATELY** - Update status right after finishing each task
+   - Don't batch completions
+   - Don't move to next task without marking previous as completed
+
+4. **Use clear, actionable task descriptions**:
+   - Content: Imperative form ("Fix bug", "Write tests")
+   - ActiveForm: Present continuous ("Fixing bug", "Writing tests")
+
+5. **Clear the list when done** - Pass empty array [] when all tasks are complete
+   - Shows users the work is finished
+   - Prevents stale todo lists
+
+6. **Break down large tasks** - If a task is too complex, break it into smaller todos
+   - Bad: "Implement entire auth system"
+   - Good: Split into 6 specific implementation steps`
+}
+
 func (t *TodoWriteTool) Description() string {
 	return `Manage and display a todo list for tracking task progress.
 

@@ -28,6 +28,10 @@ func (t *GrepTool) Description() string {
 	return "Search for content in files using regex patterns"
 }
 
+func (t *GrepTool) BestPractices() string {
+	return ""
+}
+
 func (t *GrepTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

@@ -32,6 +32,28 @@ func (t *ReadTool) Name() string {
 	return "read"
 }
 
+func (t *ReadTool) BestPractices() string {
+	return `**Read Tool Best Practices**:
+
+1. **Use line ranges for large files** - Instead of reading entire large files, specify 'from' and 'to' to read only relevant sections
+   - Example: {"files": [{"file_path": "large.go", "from": 100, "to": 150}]}
+
+2. **Read multiple related files together** - Batch related files in a single call (max 8) for better context
+   - Good: Read handler.go, handler_test.go, and types.go together
+   - Avoid: Making 3 separate read calls
+
+3. **Read function implementations precisely** - Use line ranges to read specific functions
+   - Find function start/end with grep, then read that range
+   - Avoid reading entire files when you only need one function
+
+4. **Prefer targeted reads over full file reads** - Only read what you need
+   - For imports: Read lines 1-30
+   - For specific function: Use line range
+   - For entire file: Only when genuinely needed
+
+5. **Read files before modifying** - Always read a file before using write or edit tools on it`
+}
+
 func (t *ReadTool) Description() string {
 	return `Read contents of one or more files (max 8 files per call).
 

@@ -33,6 +33,38 @@ func (t *TaskTool) Name() string {
 	return "task"
 }
 
+func (t *TaskTool) BestPractices() string {
+	return `**Task Tool Best Practices**:
+
+1. **Use specialized agents for focused tasks**:
+   - explore: For codebase exploration, finding files, searching code
+   - plan: For creating implementation plans, breaking down work
+   - execute: For implementing changes, writing code
+   - general: Use sparingly as sub-agent (prefer specialized types)
+
+2. **Provide clear, specific task descriptions** - Be precise about what the sub-agent should do
+   - Good: "Find all authentication-related files in internal/"
+   - Bad: "Look at the code"
+
+3. **Use appropriate agent types**:
+   - Exploring unfamiliar code → explore agent
+   - Planning implementation → plan agent
+   - Writing/modifying code → execute agent
+   - Complex multi-faceted task → general agent (last resort)
+
+4. **Avoid deep nesting** - Maximum 3 levels of sub-agents
+   - If you need deep nesting, reconsider your approach
+   - Break the problem differently
+
+5. **Include short descriptions** - Help users understand what each sub-agent is doing
+   - Format: 3-5 words describing the sub-task
+   - Example: "Explore authentication code", "Plan database migration"
+
+6. **Don't spawn sub-agents for simple tasks** - Direct tool use is more efficient
+   - Bad: Spawning sub-agent just to read one file
+   - Good: Use read tool directly`
+}
+
 func (t *TaskTool) Description() string {
 	return "Launch a specialized sub-agent to handle a specific task"
 }

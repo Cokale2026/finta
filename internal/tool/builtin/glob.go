@@ -25,6 +25,10 @@ func (t *GlobTool) Description() string {
 	return "Find files matching a glob pattern"
 }
 
+func (t *GlobTool) BestPractices() string {
+	return ""
+}
+
 func (t *GlobTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

@@ -24,16 +24,37 @@ type Factory interface {
 
 // DefaultFactory is the standard agent factory
 type DefaultFactory struct {
-	llmClient    llm.Client
-	toolRegistry *tool.Registry
+	llmClient           llm.Client
+	toolRegistry        *tool.Registry
+	includeBestPractices bool // Whether to include tool best practices in system prompts
 }
 
-// NewDefaultFactory creates a new agent factory
+// NewDefaultFactory creates a new agent factory with best practices enabled by default
 func NewDefaultFactory(client llm.Client, registry *tool.Registry) *DefaultFactory {
 	return &DefaultFactory{
-		llmClient:    client,
-		toolRegistry: registry,
+		llmClient:            client,
+		toolRegistry:         registry,
+		includeBestPractices: true, // Enable by default
 	}
+}
+
+// SetIncludeBestPractices enables or disables including tool best practices in system prompts
+func (f *DefaultFactory) SetIncludeBestPractices(include bool) {
+	f.includeBestPractices = include
+}
+
+// buildSystemPrompt constructs a system prompt with optional tool best practices
+func (f *DefaultFactory) buildSystemPrompt(basePrompt string) string {
+	if !f.includeBestPractices {
+		return basePrompt
+	}
+
+	bestPractices := f.toolRegistry.GetToolBestPractices()
+	if bestPractices == "" {
+		return basePrompt
+	}
+
+	return basePrompt + "\n\n" + bestPractices
 }
 
 // CreateAgent creates an agent of the specified type
@@ -54,7 +75,7 @@ func (f *DefaultFactory) CreateAgent(agentType AgentType) (Agent, error) {
 
 // createGeneralAgent creates a general-purpose agent with access to all tools
 func (f *DefaultFactory) createGeneralAgent() (Agent, error) {
-	systemPrompt := `You are a helpful AI assistant with access to tools.
+	basePrompt := `You are a helpful AI assistant with access to tools.
 You can read files, execute bash commands, write files, find files with glob
 patterns, and search files with grep.
 
@@ -64,6 +85,8 @@ When solving tasks, follow the ReAct pattern:
 3. **Observe**: Analyze the results and plan next steps
 
 Always provide clear, concise responses.`
+
+	systemPrompt := f.buildSystemPrompt(basePrompt)
 
 	return NewBaseAgent(
 		"general",
@@ -98,7 +121,7 @@ func (f *DefaultFactory) createExploreAgent() (Agent, error) {
 		}
 	}
 
-	systemPrompt := `You are an expert codebase exploration agent.
+	basePrompt := `You are an expert codebase exploration agent.
 
 Your goal is to efficiently explore and understand codebases using the ReAct pattern:
 - **Think**: Before each action, explain what you're looking for and why
@@ -111,14 +134,10 @@ You have access to read-only tools:
 - grep: Search for content in files
 - bash: Execute read-only commands (ls, find, cat, etc.)
 
-Best practices:
-1. Start with glob to find relevant files
-2. Use grep to search for specific patterns
-3. Read files to understand implementation details
-4. Be thorough but efficient
-5. Use bash for directory listings and simple queries
-
 Always provide clear summaries of your findings.`
+
+	// Build system prompt with best practices from the filtered explore registry
+	systemPrompt := f.buildSystemPrompt(basePrompt)
 
 	return NewBaseAgent(
 		"explore",
@@ -153,7 +172,7 @@ func (f *DefaultFactory) createPlanAgent() (Agent, error) {
 		}
 	}
 
-	systemPrompt := `You are an expert software architect and planning agent.
+	basePrompt := `You are an expert software architect and planning agent.
 
 Your goal is to create detailed, actionable implementation plans using the ReAct pattern:
 - **Think**: Analyze the requirements and existing codebase
@@ -178,6 +197,8 @@ Output your plan in a structured markdown format with:
 
 Be thorough and consider edge cases.`
 
+	systemPrompt := f.buildSystemPrompt(basePrompt)
+
 	return NewBaseAgent(
 		"plan",
 		systemPrompt,
@@ -196,7 +217,7 @@ Be thorough and consider edge cases.`
 
 // createExecuteAgent creates an execution-focused agent with all tools
 func (f *DefaultFactory) createExecuteAgent() (Agent, error) {
-	systemPrompt := `You are an expert implementation agent focused on careful,
+	basePrompt := `You are an expert implementation agent focused on careful,
 precise code execution.
 
 Your goal is to implement changes accurately and safely using the ReAct pattern:
@@ -211,15 +232,9 @@ You have access to all tools:
 - glob: Find files matching patterns
 - grep: Search for content in files
 
-Best practices:
-1. Always read files before modifying them
-2. Make incremental changes and verify
-3. Use glob/grep to understand context
-4. Test changes when possible
-5. Be careful with destructive operations
-6. Explain what you're doing and why
-
 Focus on correctness and safety over speed.`
+
+	systemPrompt := f.buildSystemPrompt(basePrompt)
 
 	return NewBaseAgent(
 		"execute",

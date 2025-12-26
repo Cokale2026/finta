@@ -203,14 +203,6 @@ func StreamToChannel(ctx context.Context, reader llm.StreamReader, ch chan<- str
 			break
 		}
 
-		if delta.Reason != "" {
-			select {
-			case ch <- delta.Reason:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-
 		if delta.Content != "" {
 			select {
 			case ch <- delta.Content:
