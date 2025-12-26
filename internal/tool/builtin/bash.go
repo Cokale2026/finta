@@ -78,8 +78,14 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (*tool.R
 		}, nil
 	}
 
+	outputStr := string(output)
+	// Ensure non-empty content for LLM providers that require it
+	if outputStr == "" {
+		outputStr = "(Command executed successfully with no output)"
+	}
+
 	return &tool.Result{
 		Success: true,
-		Output:  string(output),
+		Output:  outputStr,
 	}, nil
 }

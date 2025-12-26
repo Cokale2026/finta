@@ -173,12 +173,50 @@ See `docs/TOOL_BEST_PRACTICES.md` for complete documentation.
 The framework includes several built-in tools:
 
 - **read** - Read one or more files (max 8) with optional line range support
-- **bash** - Execute bash commands with timeout support
+- **bash** - Execute bash commands with timeout support (handles empty output safely)
 - **write** - Write/create files with automatic directory creation
-- **glob** - Find files matching glob patterns
+- **glob** - Find files matching glob patterns (supports `**` recursive matching)
 - **grep** - Search file contents with regex support
 - **task** - Spawn sub-agents for hierarchical task delegation
 - **TodoWrite** - Task progress tracking and management
+
+#### Glob Tool (Enhanced)
+
+**NEW**: The glob tool now supports `**` recursive directory matching.
+
+**Supported Patterns**:
+- `*.go` - All Go files in current directory (standard glob)
+- `**/*.go` - All Go files recursively in all subdirectories
+- `internal/**/*.go` - All Go files under internal/ recursively
+- `src/**/test/*.ts` - Test files in any subdirectory of src/
+- `**` - All files recursively
+
+**Examples**:
+```json
+// Find all Go files recursively
+{"pattern": "**/*.go"}
+
+// Find all test files under src/
+{"pattern": "src/**/*_test.go"}
+
+// Find all TypeScript files in internal/
+{"pattern": "internal/**/*.ts", "path": "."}
+```
+
+**Implementation**: Uses `filepath.WalkDir` for recursive patterns, standard `filepath.Glob` for non-recursive patterns. No external dependencies.
+
+#### Bash Tool (Enhanced)
+
+**FIXED**: The bash tool now handles empty command output safely.
+
+**Issue**: When bash commands produced no output (e.g., `true`, `mkdir`, successful `find` with no matches), the tool returned an empty string. This caused LLM API errors with providers that require non-empty message content.
+
+**Solution**: Returns placeholder message when output is empty:
+```
+(Command executed successfully with no output)
+```
+
+This ensures the LLM always receives valid, non-empty content while maintaining clear feedback about command success.
 
 #### Read Tool (Enhanced)
 
