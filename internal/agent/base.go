@@ -196,7 +196,7 @@ func (a *BaseAgent) executeToolsWithLogging(
 		return nil, err
 	}
 
-	// Log all results and build ReActTrace if enabled
+	// Log all results
 	for _, result := range results {
 		duration := result.EndTime.Sub(result.StartTime)
 		execCtx.LogToolResult(result.ToolName, result.Result.Success, result.Result.Output, duration)
@@ -288,12 +288,6 @@ func (a *BaseAgent) RunStreaming(ctx context.Context, input *Input, streamChan c
 			// Accumulate and send reasoning to stream channel
 			if delta.Reason != "" {
 				accumulatedMsg.Reason += delta.Reason
-				select {
-				case streamChan <- delta.Reason:
-				case <-ctx.Done():
-					reader.Close()
-					return nil, ctx.Err()
-				}
 			}
 
 			// Send content to stream channel

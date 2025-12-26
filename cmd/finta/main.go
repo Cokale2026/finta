@@ -26,7 +26,6 @@ var (
 	streaming   bool
 	parallel    bool
 	agentType   string
-	enableReAct bool
 )
 
 func main() {
@@ -88,7 +87,6 @@ func runChat(cmd *cobra.Command, args []string) error {
 	log.Info("  Max Turns: %d", maxTurns)
 	log.Info("  Parallel: %v", parallel)
 	log.Info("  Streaming: %v", streaming)
-	log.Info("  ReAct Mode: %v", enableReAct)
 	log.Info("  Verbose: %v", verbose)
 	log.Info("  API Key: %s", maskAPIKey(apiKey))
 	if apiBaseURL != "" {
