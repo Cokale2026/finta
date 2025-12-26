@@ -19,9 +19,6 @@ type Message struct {
 	ToolCallID string
 	Name       string
 	Timestamp  time.Time
-
-	// ReAct pattern support: Reasoning-Action-Observation
-	ReActTrace *ReActTrace `json:"react_trace,omitempty"`
 }
 
 type ToolCall struct {
@@ -47,13 +44,4 @@ type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
-}
-
-// ReActTrace records a complete Thought-Action-Observation cycle
-// This implements the ReAct (Reasoning and Acting) pattern for transparent agent behavior
-type ReActTrace struct {
-	Thought     string         `json:"thought"`               // Why is this action being taken?
-	Action      string         `json:"action"`                // What operation is being performed?
-	Observation string         `json:"observation"`           // What was the result?
-	Metadata    map[string]any `json:"metadata,omitempty"`    // Additional info (duration, tokens, etc.)
 }

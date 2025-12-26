@@ -20,7 +20,6 @@ type Input struct {
 	Temperature     float32
 	Logger          *logger.Logger
 	EnableStreaming bool
-	EnableReAct     bool // Enable ReAct (Reasoning-Action-Observation) pattern
 }
 
 type Output struct {
@@ -30,10 +29,10 @@ type Output struct {
 }
 
 type Config struct {
-	Model              string
-	Temperature        float32
-	MaxTokens          int
-	MaxTurns           int
+	Model               string
+	Temperature         float32
+	MaxTokens           int
+	MaxTurns            int
 	EnableParallelTools bool
 	ToolExecutionMode   tool.ExecutionMode
 }

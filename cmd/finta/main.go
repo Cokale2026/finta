@@ -53,7 +53,6 @@ func main() {
 	chatCmd.Flags().BoolVar(&streaming, "streaming", false, "Enable streaming output")
 	chatCmd.Flags().BoolVar(&parallel, "parallel", true, "Enable parallel tool execution (default: true)")
 	chatCmd.Flags().StringVar(&agentType, "agent-type", "general", "Agent type to use (general, explore, plan, execute)")
-	chatCmd.Flags().BoolVar(&enableReAct, "react", true, "Enable ReAct (Reasoning-Action-Observation) pattern (default: true)")
 
 	rootCmd.AddCommand(chatCmd)
 
@@ -132,9 +131,8 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// Build input - only override defaults if flags were explicitly set
 	input := &agent.Input{
-		Task:        task,
-		Logger:      log,
-		EnableReAct: enableReAct,
+		Task:   task,
+		Logger: log,
 	}
 
 	// Only override temperature if explicitly set by user
