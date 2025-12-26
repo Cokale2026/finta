@@ -139,6 +139,118 @@ Tool execution flow in `base.go`:
 3. Tool executes with context + parameters
 4. Result (with timing) is logged and added to conversation
 
+### Built-in Tools
+
+The framework includes several built-in tools:
+
+- **read** - Read one or more files (max 8) with optional line range support
+- **bash** - Execute bash commands with timeout support
+- **write** - Write/create files with automatic directory creation
+- **glob** - Find files matching glob patterns
+- **grep** - Search file contents with regex support
+- **task** - Spawn sub-agents for hierarchical task delegation
+- **TodoWrite** - Task progress tracking and management
+
+#### Read Tool (Enhanced)
+
+The Read tool supports advanced file reading capabilities:
+
+**Features**:
+- Read up to 8 files in a single call
+- Optional line range specification (from-to)
+- Automatic formatting with file headers for multi-file reads
+- Line counting and metadata
+
+**Single File Examples**:
+```json
+// Read entire file
+{"files": [{"file_path": "config.yaml"}]}
+
+// Read lines 10-20
+{"files": [{"file_path": "main.go", "from": 10, "to": 20}]}
+
+// Read from line 50 to end
+{"files": [{"file_path": "data.txt", "from": 50}]}
+```
+
+**Multi-File Example**:
+```json
+{
+  "files": [
+    {"file_path": "src/main.go", "from": 1, "to": 50},
+    {"file_path": "src/utils.go"},
+    {"file_path": "README.md", "from": 1, "to": 20}
+  ]
+}
+```
+
+**Output Format** (multi-file):
+```
+=== File 1/3: src/main.go (lines 1-50, returned 50 lines) ===
+[file content here]
+
+=== File 2/3: src/utils.go ===
+[file content here]
+
+=== File 3/3: README.md (lines 1-20, returned 20 lines) ===
+[file content here]
+```
+
+**Limits**:
+- Maximum 8 files per call
+- Line numbers are 1-based (first line = 1)
+- `from` must be ≤ `to` when both are specified
+
+#### TodoWrite Tool
+
+The TodoWrite tool provides task tracking functionality inspired by Claude Agent SDK:
+
+**Purpose**: Track progress on complex multi-step tasks (3+ steps)
+
+**Usage Patterns**:
+- Create todo list when starting complex work
+- Update status as tasks progress: pending → in_progress → completed
+- Keep exactly ONE task in_progress at a time
+- Mark tasks completed IMMEDIATELY after finishing
+- Clear list (empty array) when all tasks done
+
+**Todo Item Structure**:
+```json
+{
+  "content": "Fix bug in auth",      // Imperative form
+  "status": "in_progress",           // pending | in_progress | completed
+  "activeForm": "Fixing bug in auth" // Present continuous form
+}
+```
+
+**Example Usage**:
+```json
+{
+  "todos": [
+    {"content": "Read config file", "status": "completed", "activeForm": "Reading config file"},
+    {"content": "Parse data", "status": "in_progress", "activeForm": "Parsing data"},
+    {"content": "Write output", "status": "pending", "activeForm": "Writing output"}
+  ]
+}
+```
+
+**Output Format**:
+```
+📋 Todo List: 1/3 completed
+──────────────────────────────────────────────────
+1. ✅ Read config file
+2. 🔧 Parsing data
+3. ⏳ Write output
+```
+
+**Validation Rules**:
+- Only ONE task can be in_progress at a time
+- Content and activeForm cannot be empty
+- Status must be valid enum value
+- Pass empty array `[]` to clear all todos
+
+**Global State**: TodoWrite maintains a global todo list accessible via `builtin.GetCurrentTodos()`
+
 ### Logger Integration Pattern
 
 **Critical**: All agent execution MUST receive a `Logger` in the `Input` struct. The logger is NOT a field of BaseAgent - it's injected per-run to allow different logging configurations per execution.

@@ -45,8 +45,8 @@ func TestTodoWriteTool_Basic(t *testing.T) {
 		t.Errorf("Output should contain todo list header")
 	}
 
-	if !strings.Contains(result.Output, "1/3 completed") {
-		t.Errorf("Output should show progress: got %s", result.Output)
+	if !strings.Contains(result.Output, "0/3 completed") {
+		t.Errorf("Output should show progress (0/3 completed): got %s", result.Output)
 	}
 
 	// Check data
