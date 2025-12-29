@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"time"
 
+	"finta/internal/hook"
 	"finta/internal/tool"
 )
 
@@ -56,6 +57,29 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (*tool.R
 			Success: false,
 			Error:   fmt.Sprintf("invalid parameters: %v", err),
 		}, nil
+	}
+
+	// Trigger BeforeBashCommand hook for user confirmation
+	if hookManager := hook.FromContext(ctx); hookManager != nil {
+		hookData := hook.NewHookData(hook.BeforeBashCommand, "bash").
+			Set("command", p.Command)
+
+		feedback, err := hookManager.Trigger(ctx, hookData)
+		if err != nil {
+			return &tool.Result{
+				Success: false,
+				Error:   fmt.Sprintf("hook error: %v", err),
+			}, nil
+		}
+
+		if !feedback.Allow {
+			denyMsg := fmt.Sprintf("Command execution was DENIED by user. Reason: %s. Please ask the user for guidance on how to proceed.", feedback.Message)
+			return &tool.Result{
+				Success: false,
+				Output:  denyMsg,
+				Error:   denyMsg,
+			}, nil
+		}
 	}
 
 	// Default timeout: 2 minutes

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"finta/internal/hook"
 	"finta/internal/llm"
 	"finta/internal/tool"
 )
@@ -47,6 +48,11 @@ func NewBaseAgent(name, systemPrompt string, client llm.Client, registry *tool.R
 
 func (a *BaseAgent) Name() string {
 	return a.name
+}
+
+// SetHookManager sets the hook manager for tool execution
+func (a *BaseAgent) SetHookManager(manager *hook.Manager) {
+	a.toolExecutor.SetHookManager(manager)
 }
 
 func (a *BaseAgent) Run(ctx context.Context, input *Input) (*Output, error) {

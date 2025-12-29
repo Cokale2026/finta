@@ -10,7 +10,16 @@ import (
 
 // Config represents the complete Finta configuration
 type Config struct {
-	MCP MCPConfig `yaml:"mcp"`
+	MCP   MCPConfig   `yaml:"mcp"`
+	Hooks HooksConfig `yaml:"hooks"`
+}
+
+// HooksConfig contains hook-related settings
+type HooksConfig struct {
+	// BashConfirm enables user confirmation before bash commands
+	BashConfirm bool `yaml:"bash_confirm"`
+	// ToolConfirm enables user confirmation before specified tools
+	ToolConfirm []string `yaml:"tool_confirm"`
 }
 
 // MCPConfig contains MCP-specific settings

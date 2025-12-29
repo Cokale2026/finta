@@ -11,6 +11,8 @@ import (
 
 	"finta/internal/agent"
 	"finta/internal/config"
+	"finta/internal/hook"
+	"finta/internal/hook/handlers"
 	"finta/internal/llm"
 	"finta/internal/llm/openai"
 	"finta/internal/logger"
@@ -180,6 +182,24 @@ func runChat(cmd *cobra.Command, _ []string) error {
 	}
 
 	log.Debug("Created %s agent with max_turns=%d, temperature=%.2f, parallel=%v", agentType, maxTurns, temperature, parallel)
+
+	// Initialize hook manager based on configuration
+	hookManager := hook.NewManager()
+
+	if cfg.Hooks.BashConfirm {
+		hookManager.Register(handlers.NewBashConfirmHandler())
+		log.Info("Hooks: bash command confirmation enabled")
+	}
+
+	if len(cfg.Hooks.ToolConfirm) > 0 {
+		hookManager.Register(handlers.NewToolConfirmHandler(cfg.Hooks.ToolConfirm...))
+		log.Info("Hooks: tool confirmation enabled for: %v", cfg.Hooks.ToolConfirm)
+	}
+
+	// Set hook manager on agent if it supports it
+	if baseAgent, ok := ag.(*agent.BaseAgent); ok {
+		baseAgent.SetHookManager(hookManager)
+	}
 
 	// Setup context with signal handling for Ctrl+C
 	ctx, cancel := context.WithCancel(context.Background())

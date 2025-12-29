@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"finta/internal/hook"
 	"finta/internal/llm"
 )
 
@@ -18,8 +19,9 @@ const (
 )
 
 type Executor struct {
-	registry *Registry
-	mode     ExecutionMode
+	registry    *Registry
+	mode        ExecutionMode
+	hookManager *hook.Manager
 }
 
 func NewExecutor(registry *Registry) *Executor {
@@ -31,6 +33,11 @@ func NewExecutor(registry *Registry) *Executor {
 
 func (e *Executor) SetMode(mode ExecutionMode) {
 	e.mode = mode
+}
+
+// SetHookManager sets the hook manager for tool execution hooks
+func (e *Executor) SetHookManager(manager *hook.Manager) {
+	e.hookManager = manager
 }
 
 // Execute executes tool calls based on the configured mode
@@ -156,6 +163,37 @@ func (e *Executor) executeOne(ctx context.Context, tc *llm.ToolCall) (*CallResul
 		}, nil
 	}
 
+	// Trigger before tool execution hook
+	if e.hookManager != nil {
+		hookData := hook.NewHookData(hook.BeforeToolExecution, tc.Function.Name).
+			Set("params", tc.Function.Arguments)
+
+		feedback, err := e.hookManager.Trigger(ctx, hookData)
+		if err != nil {
+			return &CallResult{
+				ToolName:  tc.Function.Name,
+				CallID:    tc.ID,
+				Result:    &Result{Success: false, Error: fmt.Sprintf("hook error: %v", err)},
+				StartTime: startTime,
+				EndTime:   time.Now(),
+			}, nil
+		}
+
+		if !feedback.Allow {
+			denyMsg := fmt.Sprintf("Tool execution was DENIED by user. Reason: %s. Please ask the user for guidance on how to proceed.", feedback.Message)
+			return &CallResult{
+				ToolName:  tc.Function.Name,
+				CallID:    tc.ID,
+				Result:    &Result{Success: false, Output: denyMsg, Error: denyMsg},
+				StartTime: startTime,
+				EndTime:   time.Now(),
+			}, nil
+		}
+
+		// Add hook manager to context for tools that need it (like bash)
+		ctx = hook.WithManager(ctx, e.hookManager)
+	}
+
 	result, err := t.Execute(ctx, []byte(tc.Function.Arguments))
 	if err != nil {
 		return &CallResult{
@@ -165,6 +203,17 @@ func (e *Executor) executeOne(ctx context.Context, tc *llm.ToolCall) (*CallResul
 			StartTime: startTime,
 			EndTime:   time.Now(),
 		}, nil
+	}
+
+	// Trigger after tool execution hook
+	if e.hookManager != nil {
+		hookData := hook.NewHookData(hook.AfterToolExecution, tc.Function.Name).
+			Set("params", tc.Function.Arguments).
+			Set("result", result).
+			Set("duration", time.Since(startTime))
+
+		// After hooks don't block, just trigger
+		_, _ = e.hookManager.Trigger(ctx, hookData)
 	}
 
 	// Ensure non-empty output for LLM APIs that require non-empty content

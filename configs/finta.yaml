@@ -39,6 +39,17 @@ mcp:
     #   command: ./my-experimental-server
     #   disabled: true
 
+# Hook Configuration
+# Hooks allow user confirmation before executing potentially dangerous operations
+hooks:
+  # Enable user confirmation before executing bash commands
+  bash_confirm: true
+
+  # Enable user confirmation for specific tools (optional)
+  tool_confirm:
+    - write
+    - bash
+
 # To use this config:
 # 1. Copy this file to one of these locations:
 #    - ./finta.yaml (project directory)
