@@ -1,0 +1,48 @@
+# Finta Configuration File
+# This file configures MCP (Model Context Protocol) servers that extend Finta's capabilities
+
+mcp:
+  servers:
+    # Example: Filesystem access MCP server
+    # Uncomment to enable local filesystem operations via MCP
+    - name: filesystem
+      transport: stdio
+      command: npx
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "/home/voker/code/pale-king/traefik"  # Allowed directory (adjust to your path)
+
+    # Example: GitHub integration MCP server
+    # Uncomment and set GITHUB_TOKEN environment variable to enable
+    # - name: github
+    #   transport: stdio
+    #   command: npx
+    #   args:
+    #     - "-y"
+    #     - "@modelcontextprotocol/server-github"
+    #   env:
+    #     GITHUB_TOKEN: ${GITHUB_TOKEN}  # Reads from environment
+
+    # Example: Disabled server (will be skipped)
+    # - name: experimental
+    #   transport: stdio
+    #   command: ./my-experimental-server
+    #   disabled: true
+
+# To use this config:
+# 1. Copy this file to one of these locations:
+#    - ./finta.yaml (project directory)
+#    - ./configs/finta.yaml (project directory)
+#    - ~/.config/finta/finta.yaml (user config)
+#    - /etc/finta/finta.yaml (system-wide)
+#
+# 2. Or specify path explicitly:
+#    ./finta chat --config /path/to/config.yaml "your task"
+#
+# 3. Install MCP servers you want to use:
+#    npm install -g @modelcontextprotocol/server-filesystem
+#    npm install -g @modelcontextprotocol/server-github
+#
+# 4. Set required environment variables:
+#    export GITHUB_TOKEN=your_token_here

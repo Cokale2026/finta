@@ -7,8 +7,10 @@ import (
 	"strings"
 
 	"finta/internal/agent"
+	"finta/internal/config"
 	"finta/internal/llm/openai"
 	"finta/internal/logger"
+	"finta/internal/mcp"
 	"finta/internal/tool"
 	"finta/internal/tool/builtin"
 
@@ -26,6 +28,7 @@ var (
 	streaming   bool
 	parallel    bool
 	agentType   string
+	configPath  string
 )
 
 func main() {
@@ -52,6 +55,7 @@ func main() {
 	chatCmd.Flags().BoolVar(&streaming, "streaming", false, "Enable streaming output")
 	chatCmd.Flags().BoolVar(&parallel, "parallel", true, "Enable parallel tool execution (default: true)")
 	chatCmd.Flags().StringVar(&agentType, "agent-type", "general", "Agent type to use (general, explore, plan, execute)")
+	chatCmd.Flags().StringVar(&configPath, "config", "", "Path to config file (default: auto-detect)")
 
 	rootCmd.AddCommand(chatCmd)
 
@@ -108,6 +112,49 @@ func runChat(cmd *cobra.Command, args []string) error {
 	registry.Register(builtin.NewGrepTool())
 	registry.Register(builtin.NewTodoWriteTool())
 
+	builtinToolCount := 6
+
+	// Load MCP configuration
+	var cfg *config.Config
+	if configPath != "" {
+		var err error
+		cfg, err = config.Load(configPath)
+		if err != nil {
+			log.Info("Warning: Failed to load config: %v (continuing without MCP servers)", err)
+			cfg = &config.Config{}
+		}
+	} else {
+		var err error
+		cfg, err = config.LoadWithDefaults()
+		if err != nil {
+			log.Debug("No config file found (continuing without MCP servers)")
+			cfg = &config.Config{}
+		}
+	}
+
+	// Initialize MCP manager
+	mcpManager := mcp.NewManager(registry)
+	mcpToolCount := 0
+
+	if len(cfg.MCP.Servers) > 0 {
+		log.Info("Initializing MCP servers...")
+		if err := mcpManager.Initialize(context.Background(), cfg.MCP); err != nil {
+			log.Info("Warning: MCP initialization had errors: %v", err)
+		}
+
+		servers := mcpManager.ListServers()
+		if len(servers) > 0 {
+			log.Info("Loaded %d MCP servers: %v", len(servers), servers)
+
+			// Count MCP tools
+			allTools := registry.List()
+			mcpToolCount = len(allTools) - builtinToolCount
+		}
+	}
+
+	// Ensure cleanup on exit
+	defer mcpManager.Close()
+
 	// Create agent factory
 	factory := agent.NewDefaultFactory(llmClient, registry)
 
@@ -115,7 +162,12 @@ func runChat(cmd *cobra.Command, args []string) error {
 	taskTool := builtin.NewTaskTool(factory)
 	registry.Register(taskTool)
 
-	log.Info("Registered %d tools: read, bash, write, glob, grep, TodoWrite, task", 7)
+	totalTools := builtinToolCount + 1 + mcpToolCount // built-in + task + MCP
+	if mcpToolCount > 0 {
+		log.Info("Registered %d tools: %d built-in (read, bash, write, glob, grep, TodoWrite, task) + %d MCP tools", totalTools, builtinToolCount+1, mcpToolCount)
+	} else {
+		log.Info("Registered %d tools: read, bash, write, glob, grep, TodoWrite, task", builtinToolCount+1)
+	}
 
 	// Create agent based on type
 	var ag agent.Agent

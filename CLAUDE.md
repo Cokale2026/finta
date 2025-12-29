@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Finta is an AI Agent framework inspired by ClaudeCode's design philosophy. It provides a modular, extensible foundation for building AI agents that can execute tools, interact with LLMs, and handle complex multi-turn conversations.
 
-**Current Status**: Phase 3 complete (specialized agents: General, Explore, Plan, Execute) + Reasoning support
+**Current Status**: Phase 4 complete (MCP integration) - specialized agents + reasoning + extensible tool system
 **Go Version**: 1.24.5
 **Primary LLM Integration**: OpenAI API (with Extended Thinking / Reasoning)
+**Tool System**: Built-in tools + MCP (Model Context Protocol) server integration
 
 ## Build and Development Commands
 
@@ -37,6 +38,9 @@ export OPENAI_API_KEY="your-key"
 ./finta chat --agent-type explore "Find all Go files in internal/"
 ./finta chat --agent-type plan "Plan how to add a new tool"
 ./finta chat --agent-type execute "Create test file"
+
+# With MCP servers (requires config file)
+./finta chat --config configs/finta.yaml "List files in project directory"
 ```
 
 ### Available CLI Flags
@@ -50,6 +54,7 @@ export OPENAI_API_KEY="your-key"
 - `--no-color` - Disable colored output
 - `--streaming` - Enable streaming output (default: false)
 - `--parallel` - Enable parallel tool execution (default: true)
+- `--config` - Path to config file with MCP servers (default: auto-detect from ./finta.yaml, ./configs/finta.yaml, ~/.config/finta/finta.yaml, or /etc/finta/finta.yaml)
 
 ## Architecture
 
@@ -318,6 +323,167 @@ The TodoWrite tool provides task tracking functionality inspired by Claude Agent
 
 **Global State**: TodoWrite maintains a global todo list accessible via `builtin.GetCurrentTodos()`
 
+### MCP Integration (Phase 4)
+
+**NEW**: The framework now supports MCP (Model Context Protocol) servers, enabling dynamic tool extension via external processes.
+
+#### Overview
+
+MCP integration allows Finta to load tools from external MCP servers at runtime. This enables:
+- **Dynamic tool loading**: Add new capabilities without modifying Finta code
+- **Tool namespacing**: MCP tools use `server_name_tool_name` format (e.g., `filesystem_read_file`)
+- **Multiple servers**: Run multiple MCP servers concurrently
+- **Seamless integration**: MCP tools work alongside built-in tools
+
+**Note**: Tool names must match OpenAI's pattern `^[a-zA-Z0-9_-]+$` (alphanumeric, underscores, and hyphens only).
+
+#### Architecture
+
+```
+Config File (YAML)
+       ↓
+MCP Manager → Server 1 (filesystem) → Tools: filesystem_read_file, filesystem_write_file
+            → Server 2 (github) → Tools: github_create_issue, github_search_repos
+       ↓
+Tool Registry (Built-in + MCP tools)
+       ↓
+Agent Execution (LLM can call any tool)
+```
+
+#### Configuration
+
+Create a config file (e.g., `configs/finta.yaml`) with MCP server definitions:
+
+```yaml
+mcp:
+  servers:
+    # Filesystem access
+    - name: filesystem
+      transport: stdio
+      command: npx
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "/home/user/projects"  # Allowed directory
+
+    # GitHub integration
+    - name: github
+      transport: stdio
+      command: npx
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-github"
+      env:
+        GITHUB_TOKEN: ${GITHUB_TOKEN}  # Environment variable expansion
+
+    # Disabled server (will be skipped)
+    - name: experimental
+      transport: stdio
+      command: ./my-server
+      disabled: true
+```
+
+**Config File Locations** (checked in order):
+1. `./finta.yaml` (project directory)
+2. `./configs/finta.yaml` (project directory)
+3. `~/.config/finta/finta.yaml` (user config)
+4. `/etc/finta/finta.yaml` (system-wide)
+
+Or specify explicitly with `--config /path/to/config.yaml`
+
+#### Environment Variable Interpolation
+
+Config values support `${VAR}` and `$VAR` syntax:
+- `${GITHUB_TOKEN}` - Reads from `GITHUB_TOKEN` environment variable
+- `Bearer ${API_KEY}` - Interpolated to `Bearer abc123...`
+
+#### Tool Namespacing
+
+MCP tools are namespaced to prevent conflicts:
+- Built-in tool: `read`
+- MCP tool: `filesystem_read_file`, `github_create_issue`
+
+**Naming Convention**:
+- Format: `{server_name}_{tool_name}`
+- Server names and tool names are automatically combined with underscore
+- Must match pattern: `^[a-zA-Z0-9_-]+$` (OpenAI API requirement)
+- Examples: `filesystem_read_file`, `github_create_issue`, `slack_send_message`
+
+This allows both built-in and MCP tools with similar names to coexist.
+
+#### Component Architecture
+
+**Files**:
+- `internal/config/` - YAML config parsing and env variable expansion
+- `internal/mcp/client.go` - MCP SDK client wrapper
+- `internal/mcp/server.go` - Server instance management
+- `internal/mcp/adapter.go` - MCP Tool → Finta Tool adapter
+- `internal/mcp/manager.go` - Multi-server coordinator
+- `configs/finta.yaml` - Example configuration file
+
+**Key Classes**:
+```go
+// Manager coordinates multiple MCP servers
+type Manager struct {
+    servers  map[string]*Server
+    registry *tool.Registry
+}
+
+// Server wraps an MCP server process
+type Server struct {
+    config MCPServerConfig
+    client *Client  // SDK client + session
+}
+
+// MCPToolAdapter implements tool.Tool interface
+type MCPToolAdapter struct {
+    client         *Client
+    mcpTool        *mcp.Tool
+    namespacedName string  // "server_tool" format
+}
+```
+
+#### Usage Example
+
+1. **Install MCP servers**:
+```bash
+npm install -g @modelcontextprotocol/server-filesystem
+npm install -g @modelcontextprotocol/server-github
+```
+
+2. **Create config file** (`configs/finta.yaml` - see example above)
+
+3. **Set environment variables**:
+```bash
+export GITHUB_TOKEN=ghp_your_token_here
+```
+
+4. **Run Finta with MCP**:
+```bash
+./finta chat --config configs/finta.yaml "Create a GitHub issue for bug X"
+# Agent can now use github_create_issue tool
+```
+
+#### Error Handling
+
+- **Partial Success**: If some MCP servers fail to start, Finta continues with available tools
+- **Graceful Degradation**: Missing config file is not an error - Finta runs with built-in tools only
+- **Clear Logging**: Failed servers are logged with specific error messages
+
+#### Limitations
+
+- **Transport**: Only `stdio` transport is currently supported (HTTP/SSE planned for future)
+- **Resource Support**: MCP resources and prompts are not yet implemented (tools only)
+- **Health Monitoring**: Basic health checks only - no auto-restart on server crashes
+
+#### Future Enhancements
+
+- HTTP/SSE transport support
+- MCP resource and prompt support
+- Health monitoring with auto-restart
+- Per-agent MCP tool filtering
+- Hot-reload of MCP servers
+
 ### Logger Integration Pattern
 
 **Critical**: All agent execution MUST receive a `Logger` in the `Input` struct. The logger is NOT a field of BaseAgent - it's injected per-run to allow different logging configurations per execution.
@@ -432,15 +598,21 @@ registry.Register(builtin.NewYourTool())
 3. Handle message conversion and tool call parsing
 4. Update `cmd/finta/main.go` to support selection
 
-## Future Phases (See plans.md)
+## Implementation Status (See plans.md and docs/phase/)
 
-- **Phase 2**: Advanced tool system (parallel execution, more built-in tools)
-- **Phase 3**: Specialized agents (Explore, Plan, Execute)
-- **Phase 4**: MCP integration
+### Completed Phases
+
+- **Phase 1**: ✅ Core agent framework with ReAct pattern
+- **Phase 2**: ✅ Advanced tool system (parallel/mixed execution, glob, grep, read, write, bash, TodoWrite)
+- **Phase 3**: ✅ Specialized agents (General, Explore, Plan, Execute) with Task tool for hierarchical composition
+- **Phase 4**: ✅ MCP integration (stdio transport, tool namespacing, YAML config, environment variable expansion)
+
+### Future Phases
+
 - **Phase 5**: Hook/plugin system
 - **Phase 6**: Session management and persistence
-- **Phase 7**: Configuration system
-- **Phase 8**: Documentation and examples
+- **Phase 7**: Enhanced configuration system (per-agent MCP filtering, tool access control)
+- **Phase 8**: Comprehensive testing and examples
 
 ## Testing Strategy
 
