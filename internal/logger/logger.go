@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/glamour"
 )
 
 // Level represents the log level
@@ -35,10 +37,11 @@ const (
 
 // Logger provides structured logging for the agent framework
 type Logger struct {
-	writer    io.Writer
-	level     Level
-	showTime  bool
-	colorMode bool
+	writer     io.Writer
+	level      Level
+	showTime   bool
+	colorMode  bool
+	mdRenderer *glamour.TermRenderer
 }
 
 // NewLogger creates a new Logger instance
@@ -46,17 +49,38 @@ func NewLogger(w io.Writer, level Level) *Logger {
 	if w == nil {
 		w = os.Stdout
 	}
+
+	// Create markdown renderer with dark style (works well on most terminals)
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(100),
+	)
+
 	return &Logger{
-		writer:    w,
-		level:     level,
-		showTime:  true,
-		colorMode: true,
+		writer:     w,
+		level:      level,
+		showTime:   true,
+		colorMode:  true,
+		mdRenderer: renderer,
 	}
 }
 
 // SetColorMode enables or disables colored output
 func (l *Logger) SetColorMode(enabled bool) {
 	l.colorMode = enabled
+
+	// Recreate markdown renderer based on color mode
+	if enabled {
+		l.mdRenderer, _ = glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(100),
+		)
+	} else {
+		l.mdRenderer, _ = glamour.NewTermRenderer(
+			glamour.WithStylePath("notty"),
+			glamour.WithWordWrap(100),
+		)
+	}
 }
 
 // SetShowTime enables or disables timestamp display
@@ -86,14 +110,14 @@ func (l *Logger) Error(format string, args ...any) {
 // AgentResponse logs the agent's response with structured formatting
 func (l *Logger) AgentResponse(content string) {
 	if l.level <= LevelAgent {
-		l.printSection(ColorGreen, "💬 Agent Response", content)
+		l.printMarkdownSection(ColorGreen, "💬 Agent Response", content)
 	}
 }
 
 // AgentReasoning logs the agent's reasoning/thinking process
 func (l *Logger) AgentReasoning(content string) {
 	if l.level <= LevelAgent {
-		l.printSection(ColorYellow, "💭 Agent Reasoning", content)
+		l.printMarkdownSection(ColorYellow, "💭 Agent Reasoning", content)
 	}
 }
 
@@ -195,6 +219,28 @@ func (l *Logger) printSection(color, header, content string) {
 		fmt.Fprintf(l.writer, "%s%s%s\n\n", color, separator, ColorReset)
 	} else {
 		fmt.Fprintf(l.writer, "\n%s\n%s\n%s\n%s\n\n", header, separator, content, separator)
+	}
+}
+
+// printMarkdownSection prints a section with markdown-rendered content
+func (l *Logger) printMarkdownSection(color, header, content string) {
+	separator := strings.Repeat("─", 60)
+
+	// Render markdown content
+	rendered := content
+	if l.mdRenderer != nil {
+		if out, err := l.mdRenderer.Render(content); err == nil {
+			rendered = strings.TrimSpace(out)
+		}
+	}
+
+	if l.colorMode {
+		fmt.Fprintf(l.writer, "\n%s%s%s%s\n", ColorBold, color, header, ColorReset)
+		fmt.Fprintf(l.writer, "%s%s%s\n", color, separator, ColorReset)
+		fmt.Fprintf(l.writer, "%s\n", rendered)
+		fmt.Fprintf(l.writer, "%s%s%s\n\n", color, separator, ColorReset)
+	} else {
+		fmt.Fprintf(l.writer, "\n%s\n%s\n%s\n%s\n\n", header, separator, rendered, separator)
 	}
 }
 

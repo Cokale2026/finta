@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 
 	"finta/internal/agent"
 	"finta/internal/config"
@@ -42,9 +43,9 @@ func main() {
 	}
 
 	chatCmd := &cobra.Command{
-		Use:   "chat [task]",
-		Short: "Chat with an AI agent (interactive mode if no task provided)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:   "chat",
+		Short: "Start interactive chat with an AI agent",
+		Args:  cobra.NoArgs,
 		RunE:  runChat,
 	}
 
@@ -68,15 +69,9 @@ func main() {
 	}
 }
 
-func runChat(cmd *cobra.Command, args []string) error {
+func runChat(cmd *cobra.Command, _ []string) error {
 	if apiKey == "" {
 		return fmt.Errorf("OpenAI API key required (set OPENAI_API_KEY or use --api-key)")
-	}
-
-	// Get initial task if provided
-	var initialTask string
-	if len(args) > 0 {
-		initialTask = args[0]
 	}
 
 	// Create Logger
@@ -224,13 +219,45 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 		if streaming {
 			streamChan := make(chan string, 100)
+			var streamedContent strings.Builder
+			var lineCount int
+			var mu sync.Mutex
+			var wg sync.WaitGroup
+
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				for content := range streamChan {
 					fmt.Print(content)
+					mu.Lock()
+					streamedContent.WriteString(content)
+					lineCount += strings.Count(content, "\n")
+					mu.Unlock()
 				}
 			}()
+
 			input.EnableStreaming = true
 			output, err = ag.RunStreaming(ctx, input, streamChan)
+
+			// Wait for streaming goroutine to finish
+			wg.Wait()
+
+			// Clear streamed content and re-render with markdown
+			if err == nil && streamedContent.Len() > 0 {
+				mu.Lock()
+				content := streamedContent.String()
+				lines := lineCount
+				mu.Unlock()
+
+				// Move cursor up and clear (add 1 for the line without newline at end)
+				if lines > 0 || len(content) > 0 {
+					fmt.Printf("\033[%dA", lines+1) // Move up
+					fmt.Print("\033[J")              // Clear to end of screen
+				}
+
+				// Re-render with markdown formatting
+				log.AgentResponse(content)
+			}
 		} else {
 			output, err = ag.Run(ctx, input)
 		}
@@ -242,17 +269,6 @@ func runChat(cmd *cobra.Command, args []string) error {
 		// Update history (filter out system messages as agent adds them automatically)
 		history = filterSystemMessages(output.Messages)
 		return nil
-	}
-
-	// If initial task provided, run it first
-	if initialTask != "" {
-		if err := runTask(initialTask); err != nil {
-			if ctx.Err() != nil {
-				return nil // Graceful exit on Ctrl+C
-			}
-			log.Error("Agent execution failed: %v", err)
-			return err
-		}
 	}
 
 	// Interactive loop
