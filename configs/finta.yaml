@@ -11,7 +11,16 @@ mcp:
       args:
         - "-y"
         - "@modelcontextprotocol/server-filesystem"
-        - "/home/voker/code/pale-king/traefik"  # Allowed directory (adjust to your path)
+        - "/home/voker/code/cokale/ebooks/target"  # Allowed directory (adjust to your path)
+
+    - name: ebook-mcp
+      transport: stdio
+      command: uv
+      args:
+        - "--directory"
+        - "/home/voker/code/cokale/ebook-mcp"
+        - "run"
+        - "src/ebook_mcp/main.py"
 
     # Example: GitHub integration MCP server
     # Uncomment and set GITHUB_TOKEN environment variable to enable

@@ -138,6 +138,10 @@ func (e *Executor) ExecuteMixed(ctx context.Context, toolCalls []*llm.ToolCall) 
 	return allResults, nil
 }
 
+// EmptyOutputPlaceholder is returned when a tool produces no output.
+// This ensures LLM APIs (which require non-empty content) don't fail with 400 errors.
+const EmptyOutputPlaceholder = "(Tool executed successfully with no output)"
+
 func (e *Executor) executeOne(ctx context.Context, tc *llm.ToolCall) (*CallResult, error) {
 	startTime := time.Now()
 
@@ -161,6 +165,11 @@ func (e *Executor) executeOne(ctx context.Context, tc *llm.ToolCall) (*CallResul
 			StartTime: startTime,
 			EndTime:   time.Now(),
 		}, nil
+	}
+
+	// Ensure non-empty output for LLM APIs that require non-empty content
+	if result.Output == "" {
+		result.Output = EmptyOutputPlaceholder
 	}
 
 	return &CallResult{
