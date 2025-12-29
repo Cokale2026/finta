@@ -275,7 +275,7 @@ func (e *Executor) GetDependencyInfo(toolCalls []*llm.ToolCall) string {
 	deps := e.analyzeDependencies(toolCalls)
 	batches := e.buildExecutionBatches(toolCalls, deps)
 
-	info := fmt.Sprintf("Tool Call Dependency Analysis:\n")
+	info := "Tool Call Dependency Analysis:\n"
 	info += fmt.Sprintf("Total tools: %d\n", len(toolCalls))
 	info += fmt.Sprintf("Dependencies found: %d\n\n", len(deps))
 

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 
 	"finta/internal/agent"
 	"finta/internal/config"
+	"finta/internal/llm"
 	"finta/internal/llm/openai"
 	"finta/internal/logger"
 	"finta/internal/mcp"
@@ -40,8 +43,8 @@ func main() {
 
 	chatCmd := &cobra.Command{
 		Use:   "chat [task]",
-		Short: "Chat with an AI agent",
-		Args:  cobra.MinimumNArgs(1),
+		Short: "Chat with an AI agent (interactive mode if no task provided)",
+		Args:  cobra.MaximumNArgs(1),
 		RunE:  runChat,
 	}
 
@@ -70,7 +73,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("OpenAI API key required (set OPENAI_API_KEY or use --api-key)")
 	}
 
-	task := args[0]
+	// Get initial task if provided
+	var initialTask string
+	if len(args) > 0 {
+		initialTask = args[0]
+	}
 
 	// Create Logger
 	logLevel := logger.LevelInfo
@@ -84,7 +91,6 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// Print configuration with masked sensitive data
 	log.Info("Configuration:")
-	log.Info("  Task: %s", task)
 	log.Info("  Model: %s", model)
 	log.Info("  Agent Type: %s", agentType)
 	log.Info("  Temperature: %.2f", temperature)
@@ -180,53 +186,116 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	log.Debug("Created %s agent with max_turns=%d, temperature=%.2f, parallel=%v", agentType, maxTurns, temperature, parallel)
 
-	// Build input - only override defaults if flags were explicitly set
-	input := &agent.Input{
-		Task:   task,
-		Logger: log,
+	// Setup context with signal handling for Ctrl+C
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+	go func() {
+		<-sigChan
+		fmt.Println("\nExiting...")
+		cancel()
+	}()
+
+	// Message history for continuous conversation
+	var history []llm.Message
+
+	// Helper function to run a single task
+	runTask := func(task string) error {
+		input := &agent.Input{
+			Task:     task,
+			Messages: history,
+			Logger:   log,
+		}
+
+		// Only override temperature if explicitly set by user
+		if cmd.Flags().Changed("temperature") {
+			input.Temperature = temperature
+		}
+
+		// Only override max turns if explicitly set by user
+		if cmd.Flags().Changed("max-turns") {
+			input.MaxTurns = maxTurns
+		}
+
+		var output *agent.Output
+		var err error
+
+		if streaming {
+			streamChan := make(chan string, 100)
+			go func() {
+				for content := range streamChan {
+					fmt.Print(content)
+				}
+			}()
+			input.EnableStreaming = true
+			output, err = ag.RunStreaming(ctx, input, streamChan)
+		} else {
+			output, err = ag.Run(ctx, input)
+		}
+
+		if err != nil {
+			return err
+		}
+
+		// Update history (filter out system messages as agent adds them automatically)
+		history = filterSystemMessages(output.Messages)
+		return nil
 	}
 
-	// Only override temperature if explicitly set by user
-	if cmd.Flags().Changed("temperature") {
-		input.Temperature = temperature
-		log.Debug("Overriding agent temperature with CLI value: %.2f", temperature)
-	}
-
-	// Only override max turns if explicitly set by user
-	if cmd.Flags().Changed("max-turns") {
-		input.MaxTurns = maxTurns
-		log.Debug("Overriding agent max turns with CLI value: %d", maxTurns)
-	}
-
-	// Run Agent (pass Logger to agent)
-	if streaming {
-		log.Info("Running in streaming mode")
-		streamChan := make(chan string, 100)
-
-		// Start goroutine to print streamed content
-		go func() {
-			for content := range streamChan {
-				fmt.Print(content)
+	// If initial task provided, run it first
+	if initialTask != "" {
+		if err := runTask(initialTask); err != nil {
+			if ctx.Err() != nil {
+				return nil // Graceful exit on Ctrl+C
 			}
-		}()
-
-		input.EnableStreaming = true
-		_, err := ag.RunStreaming(context.Background(), input, streamChan)
-		if err != nil {
-			log.Error("Agent execution failed: %v", err)
-			return err
-		}
-	} else {
-		_, err := ag.Run(context.Background(), input)
-		if err != nil {
 			log.Error("Agent execution failed: %v", err)
 			return err
 		}
 	}
 
-	log.Debug("Agent completed successfully")
+	// Interactive loop
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Print("> ")
+		if !scanner.Scan() {
+			break // EOF
+		}
 
+		// Check if context was cancelled
+		if ctx.Err() != nil {
+			break
+		}
+
+		task := strings.TrimSpace(scanner.Text())
+		if task == "" {
+			continue
+		}
+
+		if err := runTask(task); err != nil {
+			if ctx.Err() != nil {
+				break // Graceful exit on Ctrl+C
+			}
+			log.Error("Error: %v", err)
+			continue
+		}
+	}
+
+	log.Debug("Session ended")
 	return nil
+}
+
+// filterSystemMessages removes system messages from history
+// since the agent automatically adds system prompt
+func filterSystemMessages(messages []llm.Message) []llm.Message {
+	filtered := make([]llm.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role != llm.RoleSystem {
+			filtered = append(filtered, msg)
+		}
+	}
+	return filtered
 }
 
 // maskAPIKey masks the API key for logging, showing only first 8 and last 4 characters
