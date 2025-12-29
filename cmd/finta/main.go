@@ -1,9 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,6 +20,7 @@ import (
 	"finta/internal/tool"
 	"finta/internal/tool/builtin"
 
+	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 )
 
@@ -291,20 +292,37 @@ func runChat(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	// Interactive loop
-	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		fmt.Print("> ")
-		if !scanner.Scan() {
-			break // EOF
-		}
+	// Interactive loop with readline support
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          "> ",
+		HistoryFile:     "", // No history file
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+	})
+	if err != nil {
+		log.Error("Failed to initialize readline: %v", err)
+		return err
+	}
+	defer rl.Close()
 
+	for {
 		// Check if context was cancelled
 		if ctx.Err() != nil {
 			break
 		}
 
-		task := strings.TrimSpace(scanner.Text())
+		line, err := rl.Readline()
+		if err != nil {
+			if err == readline.ErrInterrupt {
+				continue // Ctrl+C clears line, continue
+			}
+			if err == io.EOF {
+				break // Ctrl+D exits
+			}
+			break
+		}
+
+		task := strings.TrimSpace(line)
 		if task == "" {
 			continue
 		}
